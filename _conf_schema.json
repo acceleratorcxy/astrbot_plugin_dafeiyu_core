@@ -1,0 +1,998 @@
+{
+  "owner": {
+    "description": "👑 主人身份与听令规则",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用主人身份识别",
+        "type": "bool",
+        "default": true
+      },
+      "bot_filter": {
+        "description": "生效的机器人（umo 关键字）",
+        "type": "list",
+        "default": []
+      },
+      "master_ids": {
+        "description": "主人 ID 列表（QQ 号 / openid / 用户名）",
+        "type": "list",
+        "default": []
+      },
+      "master_name": {
+        "description": "主人的称呼",
+        "type": "string",
+        "default": "主人"
+      },
+      "rule_enabled": {
+        "description": "在提示词里固定听令规则",
+        "type": "bool",
+        "default": true
+      },
+      "inject_speaker_identity": {
+        "description": "每轮标注当前说话人身份",
+        "type": "bool",
+        "default": true
+      },
+      "speaker_hint_in_private": {
+        "description": "私聊也标注说话人",
+        "type": "bool",
+        "default": true
+      },
+      "rule_override": {
+        "description": "自定义听令规则（留空用内置）",
+        "type": "text",
+        "default": ""
+      }
+    }
+  },
+  "group_wake": {
+    "description": "📣 群聊唤醒与随机搭话",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用群聊唤醒",
+        "type": "bool",
+        "default": true
+      },
+      "bot_filter": {
+        "description": "生效的机器人（umo 关键字）",
+        "type": "list",
+        "default": []
+      },
+      "keywords": {
+        "description": "唤醒关键词",
+        "type": "list",
+        "default": [
+          "大肥鱼",
+          "肥鱼",
+          "鲸",
+          "鱼鱼"
+        ]
+      },
+      "cooldown_seconds": {
+        "description": "关键词唤醒冷却（秒）",
+        "type": "int",
+        "default": 0
+      },
+      "only_group": {
+        "description": "只对群聊生效",
+        "type": "bool",
+        "default": true
+      },
+      "random_reply_enabled": {
+        "description": "启用随机搭话",
+        "type": "bool",
+        "default": true
+      },
+      "random_reply_probability": {
+        "description": "随机搭话概率（%）",
+        "type": "float",
+        "default": 5
+      },
+      "random_reply_cooldown_seconds": {
+        "description": "随机搭话冷却（秒）",
+        "type": "int",
+        "default": 900
+      },
+      "random_reply_min_chars": {
+        "description": "随机搭话最小字数",
+        "type": "int",
+        "default": 4
+      },
+      "engaged_enabled": {
+        "description": "续聊：她回完一句后，相关的新消息继续接话",
+        "type": "bool",
+        "default": true
+      },
+      "engaged_probability": {
+        "description": "续聊接话概率（%，会乘相关度）",
+        "type": "float",
+        "default": 80
+      },
+      "engaged_min_score": {
+        "description": "续聊相关度门槛（0~1，越高越难触发）",
+        "type": "float",
+        "default": 0.2
+      },
+      "engaged_window_seconds": {
+        "description": "续聊盯多久（秒，超时就不管这个群了）",
+        "type": "int",
+        "default": 180
+      },
+      "engaged_idle_seconds": {
+        "description": "群里安静多少秒后退出续聊",
+        "type": "int",
+        "default": 120
+      },
+      "engaged_max_turns": {
+        "description": "最多连着接几句",
+        "type": "int",
+        "default": 6
+      },
+      "engaged_cooldown_seconds": {
+        "description": "续聊两条之间最少隔几秒",
+        "type": "int",
+        "default": 10
+      },
+      "engaged_use_interest": {
+        "description": "续聊时也算上她的兴趣相关度",
+        "type": "bool",
+        "default": true
+      },
+      "lively_boost_enabled": {
+        "description": "群里热闹时提高主动回话概率",
+        "type": "bool",
+        "default": true
+      },
+      "lively_window_seconds": {
+        "description": "统计热闹程度的时间窗口（秒）",
+        "type": "int",
+        "default": 120
+      },
+      "lively_min_messages": {
+        "description": "窗口内超过几条消息算热闹（越热闹加成越多）",
+        "type": "int",
+        "default": 6
+      },
+      "lively_max_boost": {
+        "description": "热闹时主动回话概率最多翻几倍",
+        "type": "float",
+        "default": 3.0
+      }
+    }
+  },
+  "humanizer": {
+    "description": "💬 人味化输出",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用人味化",
+        "type": "bool",
+        "default": true
+      },
+      "bot_filter": {
+        "description": "生效的机器人（umo 关键字）",
+        "type": "list",
+        "default": []
+      },
+      "also_webchat": {
+        "description": "网页聊天也生效",
+        "type": "bool",
+        "default": true
+      },
+      "reply_delay_seconds": {
+        "description": "回复前随机延迟上限（秒）",
+        "type": "float",
+        "default": 0.8
+      },
+      "max_segments": {
+        "description": "最多拆成几条",
+        "type": "int",
+        "default": 3
+      },
+      "max_chars_per_segment": {
+        "description": "每条最多多少字",
+        "type": "int",
+        "default": 30
+      },
+      "max_images": {
+        "description": "最多保留几张图",
+        "type": "int",
+        "default": 1
+      },
+      "image_reply_probability": {
+        "description": "带表情包的概率（%，0=从不带，100=每次都带）",
+        "type": "int",
+        "default": 45
+      },
+      "image_min_gap_seconds": {
+        "description": "同一个对话两张图最短间隔（秒）",
+        "type": "int",
+        "default": 120
+      },
+      "strip_markdown": {
+        "description": "去掉 Markdown 标记",
+        "type": "bool",
+        "default": true
+      },
+      "strip_parenthetical": {
+        "description": "去掉括号旁白",
+        "type": "bool",
+        "default": true
+      },
+      "strip_ai_talk": {
+        "description": "去掉 AI 腔句子",
+        "type": "bool",
+        "default": true
+      },
+      "suppress_reasoning_display": {
+        "description": "不显示思考过程",
+        "type": "bool",
+        "default": true
+      },
+      "force_plain_text": {
+        "description": "强制纯文本（不转图片）",
+        "type": "bool",
+        "default": true
+      },
+      "style_reminder": {
+        "description": "追加说话风格提醒",
+        "type": "bool",
+        "default": true
+      },
+      "sanitize_context": {
+        "description": "清洗历史里的 AI 腔",
+        "type": "bool",
+        "default": true
+      },
+      "context_sanitize_max_messages": {
+        "description": "清洗最近多少条历史",
+        "type": "int",
+        "default": 24
+      }
+    }
+  },
+  "interest": {
+    "description": "🎣 兴趣机制",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用兴趣机制",
+        "type": "bool",
+        "default": true
+      },
+      "bot_filter": {
+        "description": "生效的机器人（umo 关键字）",
+        "type": "list",
+        "default": []
+      },
+      "wake_enabled": {
+        "description": "感兴趣的话题主动接话",
+        "type": "bool",
+        "default": true
+      },
+      "wake_probability": {
+        "description": "接话概率（%，会乘兴趣度）",
+        "type": "float",
+        "default": 55
+      },
+      "wake_threshold": {
+        "description": "兴趣度门槛",
+        "type": "float",
+        "default": 0.45
+      },
+      "wake_cooldown_seconds": {
+        "description": "接话冷却（秒）",
+        "type": "int",
+        "default": 180
+      },
+      "wake_related_enabled": {
+        "description": "没提名字、但在聊她惦记的事时也按概率接话",
+        "type": "bool",
+        "default": true
+      },
+      "wake_related_probability": {
+        "description": "相关内容接话概率（%）",
+        "type": "float",
+        "default": 35
+      },
+      "wake_related_min_score": {
+        "description": "相关内容门槛（0~1，越高越难触发）",
+        "type": "float",
+        "default": 0.35
+      },
+      "only_group": {
+        "description": "只对群聊生效",
+        "type": "bool",
+        "default": true
+      },
+      "hints_enabled": {
+        "description": "注入兴趣备忘",
+        "type": "bool",
+        "default": true
+      },
+      "hints_max_items": {
+        "description": "备忘最多几条兴趣",
+        "type": "int",
+        "default": 3
+      },
+      "hints_max_notes": {
+        "description": "每条兴趣最多几条记录",
+        "type": "int",
+        "default": 2
+      },
+      "auto_search_enabled": {
+        "description": "自动上网搜索并记录",
+        "type": "bool",
+        "default": true
+      },
+      "auto_search_min_affinity": {
+        "description": "自动搜索的兴趣度门槛",
+        "type": "float",
+        "default": 0.7
+      },
+      "auto_search_cooldown_seconds": {
+        "description": "同一兴趣搜索冷却（秒）",
+        "type": "int",
+        "default": 1800
+      },
+      "auto_search_max_per_day": {
+        "description": "每天最多搜索次数",
+        "type": "int",
+        "default": 6
+      },
+      "auto_search_top_k": {
+        "description": "每次搜索取几条",
+        "type": "int",
+        "default": 3
+      },
+      "max_notes_per_interest": {
+        "description": "每个兴趣最多留几条记录",
+        "type": "int",
+        "default": 8
+      },
+      "candidate_ttl_days": {
+        "description": "临时话题保留几天（聊得少就自动忘）",
+        "type": "int",
+        "default": 3
+      },
+      "promote_mentions": {
+        "description": "同一话题聊几次才升级成兴趣",
+        "type": "int",
+        "default": 3
+      },
+      "interest_ttl_days": {
+        "description": "兴趣几天没聊就自动清除（人设/主人相关的不会被清）",
+        "type": "int",
+        "default": 7
+      },
+      "prune_enabled": {
+        "description": "启用自动清理",
+        "type": "bool",
+        "default": true
+      },
+      "prune_interval_seconds": {
+        "description": "自动清理检查间隔（秒）",
+        "type": "int",
+        "default": 3600
+      },
+      "affinity_decay_per_day": {
+        "description": "久不聊时兴趣度的每日衰减",
+        "type": "float",
+        "default": 0.02
+      },
+      "master_wake_boost": {
+        "description": "主人说话时接话概率的倍数（1.6 = 更愿意接主人的话）",
+        "type": "float",
+        "default": 1.6
+      },
+      "master_wake_threshold_scale": {
+        "description": "主人说话时兴趣度门槛的缩放（0.7 = 门槛更低，更容易触发）",
+        "type": "float",
+        "default": 0.7
+      }
+    }
+  },
+  "meme": {
+    "description": "🖼️ 主动发表情包（被要图/想配图时直接发一张）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "允许大肥鱼主动发表情包",
+        "type": "bool",
+        "default": true
+      },
+      "max_per_hour": {
+        "description": "同一个会话每小时最多主动发几张",
+        "type": "int",
+        "default": 20
+      }
+    }
+  },
+  "search": {
+    "description": "🔎 联网搜索（不知道就自己上网查，DeepSeek 官方搜索 + 百度兜底）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用联网搜索工具（web_search / web_fetch）",
+        "type": "bool",
+        "default": true
+      },
+      "hint_enabled": {
+        "description": "每轮提醒她「不知道就搜」",
+        "type": "bool",
+        "default": true
+      },
+      "provider": {
+        "description": "首选搜索服务：deepseek 或 baidu",
+        "type": "string",
+        "default": "deepseek"
+      },
+      "count": {
+        "description": "默认返回几条结果",
+        "type": "int",
+        "default": 5
+      },
+      "need_content": {
+        "description": "让 DeepSeek 顺带返回网页正文（更准但更慢）",
+        "type": "bool",
+        "default": false
+      },
+      "fallback_baidu": {
+        "description": "DeepSeek 搜索失败时用百度兜底",
+        "type": "bool",
+        "default": true
+      },
+      "timeout_seconds": {
+        "description": "单次请求超时（秒）",
+        "type": "int",
+        "default": 20
+      },
+      "daily_limit": {
+        "description": "每天最多搜几次（0=不限）",
+        "type": "int",
+        "default": 80
+      },
+      "cooldown_seconds": {
+        "description": "同一会话两次搜索的最小间隔（秒）",
+        "type": "int",
+        "default": 6
+      },
+      "api_key": {
+        "description": "DeepSeek API Key（留空自动用 provider 里配的）",
+        "type": "string",
+        "default": ""
+      },
+      "brand_hint": {
+        "description": "追加给她的搜索提示（可选）",
+        "type": "string",
+        "default": ""
+      }
+    }
+  },
+  "speaker": {
+    "description": "🗣️ 群聊发言记录（知道群里谁说了什么）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "记录群里的发言并在每轮告诉她",
+        "type": "bool",
+        "default": true
+      },
+      "bot_filter": {
+        "description": "生效的机器人（umo 关键字）",
+        "type": "list",
+        "default": []
+      },
+      "only_group": {
+        "description": "只在群聊注入发言记录",
+        "type": "bool",
+        "default": true
+      },
+      "record_private": {
+        "description": "私聊也记录（一般不需要）",
+        "type": "bool",
+        "default": false
+      },
+      "max_lines": {
+        "description": "每轮最多带最近几条发言",
+        "type": "int",
+        "default": 8
+      },
+      "max_chars": {
+        "description": "每条发言最多记多少字",
+        "type": "int",
+        "default": 40
+      },
+      "window_minutes": {
+        "description": "只看最近多少分钟内的发言",
+        "type": "int",
+        "default": 120
+      },
+      "max_log_per_umo": {
+        "description": "每个群最多留多少条记录",
+        "type": "int",
+        "default": 40
+      },
+      "max_umos": {
+        "description": "最多记多少个群",
+        "type": "int",
+        "default": 60
+      },
+      "show_master_mark": {
+        "description": "记录里标出「主人」",
+        "type": "bool",
+        "default": true
+      },
+      "master_context_enabled": {
+        "description": "主人说话没头没尾时，自动补上别人刚才的聊天",
+        "type": "bool",
+        "default": true
+      },
+      "master_context_minutes": {
+        "description": "补上下文看最近几分钟的群聊",
+        "type": "int",
+        "default": 30
+      },
+      "master_context_lines": {
+        "description": "最多补几条别人的发言",
+        "type": "int",
+        "default": 12
+      },
+      "master_context_short_chars": {
+        "description": "多短算没头没尾（字数）",
+        "type": "int",
+        "default": 8
+      },
+      "context_on_demand": {
+        "description": "只在看不懂时才读群聊上下文（看得懂的消息不补，省 token）",
+        "type": "bool",
+        "default": true
+      },
+      "context_short_chars": {
+        "description": "多短的消息算没头没尾（字数，含问句/指代才补上下文）",
+        "type": "int",
+        "default": 6
+      },
+      "context_question_chars": {
+        "description": "疑问句多长以内才补上下文（字数）",
+        "type": "int",
+        "default": 12
+      }
+    }
+  },
+  "cost": {
+    "description": "💰 费用计算（按会话算花了多少钱）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用费用统计（读 AstrBot 自带的 provider_stats，只读）",
+        "type": "bool",
+        "default": true
+      },
+      "currency": {
+        "description": "货币（CNY / USD）",
+        "type": "string",
+        "default": "CNY"
+      },
+      "input_price": {
+        "description": "输入价格（元 / 百万 token，缓存未命中；峰谷关闭时用这个）",
+        "type": "float",
+        "default": 2
+      },
+      "cached_input_price": {
+        "description": "输入价格（元 / 百万 token，缓存命中；峰谷关闭时用这个）",
+        "type": "float",
+        "default": 0.2
+      },
+      "output_price": {
+        "description": "输出价格（元 / 百万 token；峰谷关闭时用这个）",
+        "type": "float",
+        "default": 3
+      },
+      "peak_valley_enabled": {
+        "description": "峰谷计价（勾选后按 DeepSeek 官方峰时/空闲两档单价算，默认不勾，还是用上面的单档价）",
+        "type": "bool",
+        "default": false
+      },
+      "peak_input_price": {
+        "description": "峰时输入价格（元 / 百万 token，缓存未命中）",
+        "type": "float",
+        "default": 2.0
+      },
+      "peak_cached_input_price": {
+        "description": "峰时输入价格（元 / 百万 token，缓存命中）",
+        "type": "float",
+        "default": 0.04
+      },
+      "peak_output_price": {
+        "description": "峰时输出价格（元 / 百万 token）",
+        "type": "float",
+        "default": 8.0
+      },
+      "offpeak_input_price": {
+        "description": "空闲时段输入价格（元 / 百万 token，缓存未命中）",
+        "type": "float",
+        "default": 1.0
+      },
+      "offpeak_cached_input_price": {
+        "description": "空闲时段输入价格（元 / 百万 token，缓存命中）",
+        "type": "float",
+        "default": 0.02
+      },
+      "offpeak_output_price": {
+        "description": "空闲时段输出价格（元 / 百万 token）",
+        "type": "float",
+        "default": 4.0
+      },
+      "peak_ranges": {
+        "description": "高峰时段（北京时间，逗号分隔；工作日 9:00-12:00、14:00-18:00）",
+        "type": "string",
+        "default": "09:00-12:00,14:00-18:00"
+      },
+      "peak_weekdays_only": {
+        "description": "周末算空闲（只有工作日才有高峰）",
+        "type": "bool",
+        "default": true
+      },
+      "peak_holidays": {
+        "description": "法定节假日（日期逗号分隔，如 2026-10-01，这些天全天算空闲）",
+        "type": "string",
+        "default": ""
+      },
+      "report_top": {
+        "description": "报告里最多列几个会话",
+        "type": "int",
+        "default": 8
+      },
+      "include_group": {
+        "description": "群聊也一起算（关掉就只看私聊）",
+        "type": "bool",
+        "default": true
+      },
+      "budget_monthly": {
+        "description": "每月预算（0 = 不提醒）",
+        "type": "float",
+        "default": 0
+      }
+    }
+  },
+  "sleep": {
+    "description": "🌙 睡眠模式（夜里不回消息，早上再补）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用睡眠模式",
+        "type": "bool",
+        "default": true
+      },
+      "bot_filter": {
+        "description": "生效的机器人（umo 关键字）",
+        "type": "list",
+        "default": []
+      },
+      "quiet_hour": {
+        "description": "几点开始安静（只记不回，0-23）",
+        "type": "int",
+        "default": 1
+      },
+      "sleep_hour": {
+        "description": "几点正式睡着（连主人消息也排队到早上，0-23）",
+        "type": "int",
+        "default": 2
+      },
+      "wake_hour": {
+        "description": "早上几点醒（0-23）",
+        "type": "int",
+        "default": 6
+      },
+      "wake_jitter_minutes": {
+        "description": "醒来时间随机浮动（分钟，0 = 准点）",
+        "type": "int",
+        "default": 45
+      },
+      "goodnight_reply": {
+        "description": "说晚安时只回这一个字",
+        "type": "string",
+        "default": "安"
+      },
+      "goodnight_keywords": {
+        "description": "哪些话算「主人说晚安」（说晚安就立刻睡）",
+        "type": "list",
+        "default": [
+          "晚安",
+          "睡了",
+          "去睡",
+          "睡觉",
+          "困了",
+          "我睡",
+          "先睡",
+          "拜拜",
+          "歇了"
+        ]
+      },
+      "wake_keywords": {
+        "description": "睡眠期间能把她叫醒的话（只认主人私聊）",
+        "type": "list",
+        "default": [
+          "起床",
+          "醒醒",
+          "别睡",
+          "不睡",
+          "起来",
+          "强制唤醒",
+          "醒一醒"
+        ]
+      },
+      "other_goodnight_reply": {
+        "description": "睡着时别人私聊说晚安，也回一个「安」",
+        "type": "bool",
+        "default": true
+      },
+      "wake_other_private": {
+        "description": "早上起来也回别人的私聊",
+        "type": "bool",
+        "default": true
+      },
+      "catchup_enabled": {
+        "description": "早上翻一遍睡着以后的群聊，有要接的再接",
+        "type": "bool",
+        "default": true
+      },
+      "catchup_max_groups": {
+        "description": "早上最多翻几个群",
+        "type": "int",
+        "default": 8
+      },
+      "catchup_max_messages": {
+        "description": "每个群最多挑几条来回",
+        "type": "int",
+        "default": 30
+      },
+      "catchup_interest_score": {
+        "description": "群里的话题和兴趣多像才算要接（0~1）",
+        "type": "float",
+        "default": 0.2
+      },
+      "morning_report": {
+        "description": "早上醒来私聊给主人报一声（收到了什么、回了什么）",
+        "type": "bool",
+        "default": true
+      },
+      "notify_on_auto_sleep": {
+        "description": "没等到主人说晚安、自己睡着时，也私聊发一个「安」",
+        "type": "bool",
+        "default": true
+      },
+      "max_pending_per_umo": {
+        "description": "每个对话最多排队多少条消息",
+        "type": "int",
+        "default": 20
+      },
+      "max_group_buffer": {
+        "description": "每个群最多记多少条睡着后的消息",
+        "type": "int",
+        "default": 40
+      },
+      "check_interval_seconds": {
+        "description": "多久检查一次该睡还是该醒（秒）",
+        "type": "int",
+        "default": 30
+      },
+      "reply_style": {
+        "description": "早上补回时的语气要求（写进提示词）",
+        "type": "string",
+        "default": "短句、像 QQ 聊天、不要解释自己在睡觉或刚醒"
+      }
+    }
+  },
+  "backup": {
+    "description": "💾 全量资料备份（人格、兴趣、会话、插件配置…）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "每晚自动全量备份",
+        "type": "bool",
+        "default": true
+      },
+      "hour": {
+        "description": "备份时间（小时，0-23；默认 3 点，趁睡眠时间做）",
+        "type": "int",
+        "default": 3
+      },
+      "minute": {
+        "description": "备份时间（分钟，0-59）",
+        "type": "int",
+        "default": 0
+      },
+      "keep": {
+        "description": "只保留最新几份",
+        "type": "int",
+        "default": 3
+      }
+    }
+  },
+  "context_guard": {
+    "description": "🧠 上下文快满提醒与压缩",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用上下文守护",
+        "type": "bool",
+        "default": true
+      },
+      "warn_ratio": {
+        "description": "私聊用到多少比例开始提醒主人",
+        "type": "float",
+        "default": 0.75
+      },
+      "warn_cooldown_minutes": {
+        "description": "提醒冷却（分钟）",
+        "type": "int",
+        "default": 30
+      },
+      "group_auto_compress": {
+        "description": "群聊自动压缩（群聊不提醒主人，按下面规则自己压）",
+        "type": "bool",
+        "default": true
+      },
+      "group_auto_ratio": {
+        "description": "群聊上下文用到多少比例就提前压缩",
+        "type": "float",
+        "default": 0.7
+      },
+      "group_idle_minutes": {
+        "description": "群聊安静多少分钟后自动压缩",
+        "type": "int",
+        "default": 30
+      },
+      "group_pause_seconds": {
+        "description": "消息暂停多少秒后才允许自动压缩（别压到正在聊的天）",
+        "type": "int",
+        "default": 45
+      },
+      "group_daily_hour": {
+        "description": "每天几点做一次日常压缩（0-23，没新消息就跳过）",
+        "type": "int",
+        "default": 4
+      },
+      "group_min_messages": {
+        "description": "群聊少于多少条不自动压缩",
+        "type": "int",
+        "default": 20
+      },
+      "group_check_interval_seconds": {
+        "description": "群聊巡检间隔（秒）",
+        "type": "int",
+        "default": 120
+      },
+      "group_scan_limit": {
+        "description": "每次巡检最多看多少个会话",
+        "type": "int",
+        "default": 200
+      },
+      "min_messages": {
+        "description": "少于多少条不压缩",
+        "type": "int",
+        "default": 6
+      },
+      "compress_keep_recent_ratio": {
+        "description": "压缩后保留最近多少比例的消息",
+        "type": "float",
+        "default": 0.15
+      },
+      "compress_instruction": {
+        "description": "自定义压缩总结提示词（留空用内置）",
+        "type": "text",
+        "default": ""
+      },
+      "auto_reload_persona": {
+        "description": "压缩后从最新备份恢复人格资料",
+        "type": "bool",
+        "default": true
+      },
+      "persona_restore_turns": {
+        "description": "人格资料复原块保留几轮",
+        "type": "int",
+        "default": 6
+      }
+    }
+  },
+  "page": {
+    "description": "🖥️ 页面",
+    "type": "object",
+    "items": {
+      "show_advanced": {
+        "description": "页面显示高级选项",
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
+  "notify": {
+    "description": "🔒 主人私聊通知（隐私信息只私聊发给主人，不发群）",
+    "type": "object",
+    "items": {
+      "private_only": {
+        "description": "敏感信息只私聊发主人（建议开）",
+        "type": "bool",
+        "default": true
+      },
+      "private_umos": {
+        "description": "主人私聊会话（umo，可多行；默认按平台自动选）",
+        "type": "list",
+        "default": []
+      },
+      "nightly_report": {
+        "description": "每晚整理完私聊发我一份报告",
+        "type": "bool",
+        "default": true
+      },
+      "warn_in_group": {
+        "description": "允许在群聊里提上下文/配置（默认关，别开）",
+        "type": "bool",
+        "default": false
+      },
+      "report_only_own_profile": {
+        "description": "汇报只算鲸鲸自己的配置档案（别的档案的机器人会话不列出来）",
+        "type": "bool",
+        "default": true
+      },
+      "report_profile_ids": {
+        "description": "自己配置档案的 ID（留空=按机器人平台自动识别；填了就只统计这些档案）",
+        "type": "list",
+        "default": []
+      },
+      "report_channel": {
+        "description": "汇报发到哪个通道：official=官方机器人（支持 markdown）/ event=当前会话 / private=原来的主人私聊",
+        "type": "string",
+        "default": "event"
+      },
+      "report_platform_id": {
+        "description": "汇报用的官方机器人平台 ID（填你机器人的平台 id，留空则退回原私聊通道）",
+        "type": "string",
+        "default": ""
+      },
+      "report_target": {
+        "description": "汇报接收人（官方机器人 openid，默认是主人）",
+        "type": "string",
+        "default": ""
+      },
+      "report_use_markdown": {
+        "description": "汇报用 markdown 排版（官方机器人支持，个人 QQ 不支持）",
+        "type": "bool",
+        "default": true
+      },
+      "report_fallback": {
+        "description": "官方机器人发不出去时，退回原来的主人私聊",
+        "type": "bool",
+        "default": true
+      },
+      "command_platforms": {
+        "description": "允许用指令的机器人（平台 id 列表；留空=所有机器人，填 * 也等于不限制；是否只给主人用见下面的 switch）",
+        "type": "list",
+        "default": []
+      },
+      "command_private_enabled": {
+        "description": "允许在私聊里用指令（关掉后私聊发指令不执行）",
+        "type": "bool",
+        "default": true
+      },
+      "command_group_enabled": {
+        "description": "允许在群聊里用指令（默认关；QQ 官方机器人群成员 ID 和私聊不一样，认不出主人时用下面的群成员 ID 白名单）",
+        "type": "bool",
+        "default": false
+      },
+      "command_master_only": {
+        "description": "只允许主人用指令（关掉后该机器人上所有成员都能用，不建议关）",
+        "type": "bool",
+        "default": true
+      },
+      "command_group_master_ids": {
+        "description": "群聊里额外认作主人的成员 ID（例如 QQ 官方机器人群里的成员 openid，用 /sid 查；留空就只认全局管理员）",
+        "type": "list",
+        "default": []
+      }
+    }
+  }
+}

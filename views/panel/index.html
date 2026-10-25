@@ -1,0 +1,1249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>大肥鱼人格核心</title>
+<style>
+  :root {
+    --bg: #f4f6f9; --panel: #ffffff; --text: #1d232b; --muted: #6b7280;
+    --border: #e2e6ec; --accent: #4f8cff; --ok: #22a06b; --warn: #e08a00;
+    --err: #d8452f; --chip: #eef2f8;
+  }
+  html[data-theme="dark"] {
+    --bg: #12161a; --panel: #191e24; --text: #e5e9ee; --muted: #98a2ae;
+    --border: #2a3138; --accent: #5b9bff; --ok: #3ecf8e; --warn: #ffb547;
+    --err: #ff6b54; --chip: #222a32;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 14px; line-height: 1.6;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px; background: var(--panel); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .ver { font-size: 12px; color: var(--muted); font-weight: 400; }
+  .top-actions { display: flex; gap: 8px; }
+  nav.tabs { display: flex; gap: 4px; padding: 10px 18px 0; flex-wrap: wrap; }
+  nav.tabs button {
+    border: 1px solid var(--border); background: var(--panel); color: var(--muted);
+    padding: 6px 14px; border-radius: 8px 8px 0 0; cursor: pointer; font-size: 13px;
+    border-bottom: none;
+  }
+  nav.tabs button.active { color: var(--accent); border-color: var(--accent); background: var(--panel); font-weight: 600; }
+  main { padding: 0 18px 26px; }
+  section.tab { display: none; }
+  section.tab.active { display: block; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; margin-top: 12px;
+  }
+  .card h2 { font-size: 14px; margin: 0 0 10px; font-weight: 600; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .card h2 .hint { font-size: 12px; color: var(--muted); font-weight: 400; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; }
+  .stat { background: var(--chip); border-radius: 8px; padding: 10px 12px; }
+  .stat .k { font-size: 12px; color: var(--muted); }
+  .stat .v { font-size: 20px; font-weight: 600; margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  tr:last-child td { border-bottom: none; }
+  button, .btn {
+    font-family: inherit; font-size: 13px; padding: 5px 12px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text);
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.06); color: #fff; }
+  button.danger:hover { border-color: var(--err); color: var(--err); }
+  button.mini { padding: 2px 8px; font-size: 12px; }
+  input[type="text"], input[type="number"], textarea, select {
+    font-family: inherit; font-size: 13px; padding: 6px 9px; border-radius: 7px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text); width: 100%;
+  }
+  textarea { min-height: 70px; resize: vertical; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row > .grow { flex: 1 1 160px; }
+  label.field { display: block; margin: 8px 0; font-size: 13px; }
+  label.field > .lbl { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  label.field.inline { display: flex; align-items: center; gap: 8px; }
+  label.field.inline > .lbl { margin: 0; }
+  input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+  .muted { color: var(--muted); font-size: 12px; }
+  .chip { display: inline-block; background: var(--chip); border-radius: 999px; padding: 1px 8px; font-size: 12px; color: var(--muted); margin: 2px 4px 2px 0; }
+  .chip.chip-pin { background: rgba(64, 158, 255, 0.16); color: var(--accent); }
+  .interest-item { border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; margin-bottom: 10px; }
+  .interest-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .interest-name { font-weight: 600; }
+  .bar { height: 6px; background: var(--chip); border-radius: 4px; overflow: hidden; margin: 6px 0; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
+  .ctx-tiles { display: flex; flex-wrap: wrap; gap: 10px; }
+  .ctx-tile { flex: 1 1 118px; border: 1px solid var(--border); border-radius: 9px; padding: 9px 12px; }
+  .ctx-tile .ctx-tile-label { display: block; color: var(--muted); font-size: 12px; }
+  .ctx-tile b { display: block; font-size: 20px; line-height: 1.35; }
+  .ctx-row { border: 1px solid var(--border); border-radius: 9px; padding: 9px 12px; margin-bottom: 8px; }
+  .ctx-row .ctx-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .ctx-row .ctx-name { font-weight: 600; font-size: 13px; }
+  .ctx-row .ctx-meta { color: var(--muted); font-size: 12px; display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .note-row { display: flex; align-items: flex-start; gap: 6px; margin-top: 4px; }
+  .note { flex: 1; font-size: 12px; color: var(--muted); word-break: break-all; }
+  .note a { color: var(--accent); text-decoration: none; }
+  .note-ops { display: flex; gap: 4px; flex: none; }
+  .note-ops button.mini { padding: 1px 6px; font-size: 11px; }
+  details.sec { border: 1px solid var(--border); border-radius: 9px; padding: 8px 12px; margin-bottom: 10px; background: var(--panel); }
+  details.sec > summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px 16px; }
+  .toast-wrap { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }
+  .toast {
+    padding: 9px 14px; border-radius: 8px; background: #22292f; color: #fff; font-size: 13px;
+    box-shadow: 0 6px 18px rgba(0,0,0,.22); max-width: 380px; word-break: break-all;
+  }
+  .toast.ok { background: var(--ok); }
+  .toast.err { background: var(--err); }
+  .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+  .modal-mask {
+    position: fixed; inset: 0; background: rgba(0,0,0,.42); z-index: 100;
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+  }
+  .modal {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 18px; width: min(520px, 100%); max-height: 82vh; overflow: auto;
+    box-shadow: 0 12px 40px rgba(0,0,0,.3);
+  }
+  .modal-title { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+  .modal-message { font-size: 13px; color: var(--muted); margin-bottom: 10px; white-space: pre-wrap; }
+  .modal-field { display: block; margin: 10px 0; font-size: 13px; }
+  .modal-field > .lbl { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+  .kv { display: flex; gap: 6px; font-size: 13px; }
+  .kv .k { color: var(--muted); min-width: 96px; }
+  .flex-between { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🐋 大肥鱼人格核心 <span class="ver" id="ver"></span></h1>
+  <div class="top-actions">
+    <button id="btn-refresh">刷新</button>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button data-tab="overview" class="active">总览</button>
+  <button data-tab="commands">命令</button>
+  <button data-tab="interest">兴趣</button>
+  <button data-tab="backup">备份</button>
+  <button data-tab="config">配置</button>
+  <button data-tab="context">上下文</button>
+</nav>
+
+<main>
+  <section class="tab active" id="tab-overview">
+    <div class="card">
+      <h2>状态概览 <span class="hint" id="ov-updated"></span></h2>
+      <div class="stats" id="ov-stats"></div>
+      <div class="muted" id="ov-command" style="margin-top:10px"></div>
+    </div>
+    <div class="card">
+      <h2>人格资料 <span class="hint">备份与压缩恢复的数据来源</span></h2>
+      <div id="ov-personas"></div>
+    </div>
+    <div class="card">
+      <h2>配置档案与人格夹</h2>
+      <div id="ov-profiles"></div>
+      <div id="ov-folders" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <h2>备份策略</h2>
+      <div id="ov-backup-policy" class="muted">加载中…</div>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-commands">
+    <div class="card">
+      <h2>怎么设置 <span class="hint">配完保存即生效，不用重启</span></h2>
+      <table>
+        <thead><tr><th style="width:170px">项目</th><th>怎么配</th></tr></thead>
+        <tbody>
+          <tr><td>指令入口</td><td>配置 → 主人私聊通知 → <b>command_platforms</b>：允许用指令的机器人（默认只有官方机器人，填 * 表示所有机器人）</td></tr>
+          <tr><td>私聊 / 群聊</td><td>同一段的 <b>command_private_enabled</b> / <b>command_group_enabled</b>：分别开关私聊、群聊里的指令（群聊默认关）</td></tr>
+          <tr><td>只允许主人</td><td><b>command_master_only</b> 默认开；群聊里认不出主人时，把群成员 ID 填进 <b>command_group_master_ids</b>（群里发 /sid 可查）</td></tr>
+          <tr><td>其它配置</td><td>「配置」标签共 13 段（主人身份 / 群聊唤醒 / 人味化 / 兴趣 / 表情包 / 联网搜索 / 发言记录 / 费用 / 睡眠 / 备份 / 上下文 / 通知 / 页面），改完保存立即生效</td></tr>
+          <tr><td>汇报通道</td><td><b>report_channel=official</b> 时汇报发到官方机器人、用 markdown 表格；不支持 markdown 的聊天会自动降级成纯文本</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>怎么调用 <span class="hint">只认主人；群里发这些，她只私聊回你</span></h2>
+      <table>
+        <thead><tr><th style="width:300px">命令</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>/help 或 /命令</td><td>看这张命令表（官方机器人那边发 markdown 表格版，其它聊天发纯文本版）</td></tr>
+          <tr><td>/触发 &lt;动作&gt;</td><td>在私聊里一键让她干活（动作见下表）</td></tr>
+          <tr><td>/上下文 [全部]</td><td>看当前会话的上下文用量；加「全部」看每个对话</td></tr>
+          <tr><td>/压缩</td><td>把前面聊的压成一段记忆</td></tr>
+          <tr><td>/报告</td><td>整理报告（备份 + 每个对话上下文 + 费用 + 兴趣）</td></tr>
+          <tr><td>/费用 [N]</td><td>按会话看花了多少钱</td></tr>
+          <tr><td>/睡眠 [醒|睡]</td><td>看睡眠状态；主人能强制叫醒她</td></tr>
+          <tr><td>/备份 现在 | 列表 | 恢复 &lt;文件名&gt; | 删除 &lt;文件名&gt;</td><td>全量备份：人格、配置档案、兴趣、会话、发言记录、压缩状态、表情包清单</td></tr>
+          <tr><td>/主人</td><td>看当前主人设置</td></tr>
+          <tr><td>/兴趣 看 | 加 | 删 | 搜 | 记</td><td>兴趣库：手动加、删、搜、记笔记</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>/触发 的动作</h2>
+      <table>
+        <thead><tr><th style="width:300px">动作</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>报告 / 备份 [列表|恢复 文件名|删除 文件名] / 压缩 / 上下文 [全部] / 费用 [N]</td><td>同对应命令</td></tr>
+          <tr><td>兴趣</td><td>兴趣库概览</td></tr>
+          <tr><td>搜索 &lt;要搜什么&gt;</td><td>联网搜一次，结果私聊发你</td></tr>
+          <tr><td>发图 [心情]</td><td>私聊发一张表情包（可带心情，比如 无语、开心）</td></tr>
+          <tr><td>群压缩</td><td>立刻巡检一次群聊自动压缩</td></tr>
+          <tr><td>续聊</td><td>看现在正在续聊的群</td></tr>
+          <tr><td>睡眠 [醒|睡]</td><td>看睡眠状态 / 叫醒 / 让她睡</td></tr>
+          <tr><td>帮助</td><td>看 /触发 的用法</td></tr>
+        </tbody>
+      </table>
+      <div class="muted" style="margin-top:8px">例子：/触发 报告 · /触发 搜索 英雄联盟 S16 今天赛程 · /触发 发图 无语 · /触发 群压缩</div>
+    </div>
+  </section>
+  <section class="tab" id="tab-interest">
+    <div class="card">
+      <h2>添加兴趣</h2>
+      <div class="row">
+        <div class="grow"><input type="text" id="interest-name" placeholder="兴趣名字，例如：鲸鱼" /></div>
+        <div class="grow"><input type="text" id="interest-aliases" placeholder="别名，用逗号分隔，例如：鲸,小鲸鱼" /></div>
+        <div style="width:110px"><input type="number" id="interest-affinity" step="0.01" min="0" max="1" value="0.7" /></div>
+        <button class="primary" id="btn-interest-add">添加</button>
+      </div>
+      <div class="muted" style="margin-top:6px">兴趣度 0~1，越高越容易被这个话题唤醒，也越容易自动上网搜集资料。</div>
+    </div>
+    <div class="card">
+      <h2>搜索并记录 <span class="hint">会联网搜一下；已经有这个兴趣就记进兴趣库，没有就先当临时话题观察</span></h2>
+      <div class="row">
+        <div class="grow"><input type="text" id="interest-search-topic" placeholder="想搜什么？例如：鲸鱼 冷知识" /></div>
+        <button id="btn-interest-search">搜索</button>
+      </div>
+      <div id="interest-search-result" class="muted" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <h2>兴趣库 <span class="hint">点「编辑」可改兴趣度、别名，或手动加一条记录；人设自带和主人相关的兴趣会被固定，不会自动清理</span></h2>
+      <div id="interest-list"></div>
+    </div>
+    <div class="card">
+      <h2>还在观察 <span class="hint">只是聊到或搜过的临时话题：聊得多了才升级成兴趣，几天不聊就自动清掉</span></h2>
+      <div id="candidate-list"></div>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-backup">
+    <div class="card">
+      <h2>备份管理 <span class="hint" id="backup-policy"></span></h2>
+      <div class="row">
+        <button class="primary" id="btn-backup-create">立即备份</button>
+        <label class="btn" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">
+          导入备份文件 <input type="file" id="backup-file" accept="application/json,.json" style="display:none" />
+        </label>
+        <span class="muted">导入会用备份内容覆盖人格、配置档案与插件配置</span>
+      </div>
+      <div id="backup-import-result" class="muted" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <h2>备份文件</h2>
+      <div id="backup-list"></div>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-config">
+    <div class="card">
+      <h2>统一配置 <span class="hint">保存后立即生效（插件会热重载）</span></h2>
+      <div id="config-sections"></div>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-context">
+    <div class="card">
+      <h2>上下文守护 <span class="hint" id="ctx-updated"></span></h2>
+      <div class="ctx-tiles" id="ctx-tiles"></div>
+      <div class="muted" id="ctx-groupbar" style="margin-top:10px"></div>
+      <div class="muted" id="ctx-speaker" style="margin-top:4px"></div>
+      <div class="muted" id="ctx-engaged" style="margin-top:4px"></div>
+      <div class="muted" id="ctx-lively" style="margin-top:4px"></div>
+      <div class="muted" id="ctx-restore" style="margin-top:4px"></div>
+      <div class="row" style="margin-top:10px">
+        <button id="btn-ctx-refresh">刷新</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>睡眠模式 <span class="hint" id="ctx-sleep-hint">夜里不回消息，早上再补</span></h2>
+      <div class="ctx-tiles" id="ctx-sleep-tiles" style="margin-bottom:10px"></div>
+      <div class="muted" id="ctx-sleep-detail" style="line-height:1.9"></div>
+      <div class="muted" id="ctx-sleep-stats" style="margin-top:6px"></div>
+    </div>
+    <div class="card">
+      <h2>每个对话的余量 <span class="hint">按会话估算，越靠上越接近上限</span></h2>
+      <div id="ctx-list"></div>
+    </div>
+    <div class="card">
+      <h2>费用（按会话算） <span class="hint" id="ctx-cost-hint">读 AstrBot 自带的调用统计，只读，不影响聊天</span></h2>
+      <div class="ctx-tiles" id="ctx-cost-tiles" style="margin-bottom:10px"></div>
+      <div id="ctx-cost-list"></div>
+      <div class="muted" id="ctx-cost-note" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <h2>已压缩的记忆 <span class="hint" id="ctx-summaries-hint"></span></h2>
+      <div id="ctx-summaries"></div>
+    </div>
+    <div class="card">
+      <h2>规则说明</h2>
+      <div class="muted" style="line-height:1.9">
+        私聊：用到阈值比例会私聊提醒主人，回 <b>/压缩</b> 才会整理历史，并从最新备份恢复人格资料。<br />
+        群聊：不用确认 —— 余量到阈值、消息安静一段时间、或每天到点都会自动整理，压下来的记忆会注入 <b>【压缩记忆】</b>。<br />
+        睡眠模式：每天 1 点起群里和别人的私聊只记不回，2 点起（或主人说晚安后）连主人的消息也排队，早上 6 点后随机醒来统一处理；只有主人能叫醒她。<br />
+        每晚睡眠时间（默认 3 点）做一次<b>全量备份</b>（人格、兴趣、聊天记录、插件配置、表情包清单都算），并把「备份结果 + 每个对话的上下文」私聊发给主人；随时可以发 <b>/报告</b> 或 <b>/上下文 全部</b>。
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="toast-wrap" id="toasts"></div>
+
+<script>
+(function () {
+  var bridge = null;
+  function getBridge() {
+    bridge = window.AstrBotPluginView || window.AstrBotPluginPage || bridge;
+    return bridge;
+  }
+  var state = { overview: null, config: null };
+
+  function $(id) { return document.getElementById(id); }
+  function el(tag, cls, text) {
+    var node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined && text !== null) node.textContent = String(text);
+    return node;
+  }
+  function esc(text) {
+    return String(text === undefined || text === null ? "" : text)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+  function toast(message, kind) {
+    var wrap = $("toasts");
+    var node = el("div", "toast" + (kind ? " " + kind : ""), message);
+    wrap.appendChild(node);
+    setTimeout(function () { node.remove(); }, kind === "err" ? 6000 : 3200);
+  }
+  function fail(err) {
+    var msg = err && err.message ? err.message : String(err);
+    toast("出错：" + msg, "err");
+  }
+
+  // 插件页面是 sandbox iframe，window.prompt/confirm 会被浏览器忽略，这里自带一个弹窗
+  function uiDialog(opts) {
+    opts = opts || {};
+    return new Promise(function (resolve) {
+      var mask = el("div", "modal-mask");
+      var box = el("div", "modal");
+      box.appendChild(el("div", "modal-title", opts.title || "确认"));
+      if (opts.message) box.appendChild(el("div", "modal-message", opts.message));
+      var inputs = {};
+      (opts.fields || []).forEach(function (f) {
+        var wrap = el("label", "modal-field");
+        wrap.appendChild(el("span", "lbl", f.label || f.key));
+        var input;
+        if (f.multiline) {
+          input = document.createElement("textarea");
+        } else {
+          input = document.createElement("input");
+          input.type = "text";
+        }
+        input.value = f.value === undefined || f.value === null ? "" : String(f.value);
+        if (f.placeholder) input.placeholder = f.placeholder;
+        wrap.appendChild(input);
+        inputs[f.key] = input;
+        box.appendChild(wrap);
+      });
+      var actions = el("div", "modal-actions");
+      var cancelBtn = el("button", "", opts.cancelText || "取消");
+      var okBtn = el("button", "primary", opts.okText || "确定");
+      function close(result) {
+        document.removeEventListener("keydown", onKey);
+        if (mask.parentNode) mask.parentNode.removeChild(mask);
+        resolve(result);
+      }
+      function submit() {
+        var out = {};
+        Object.keys(inputs).forEach(function (k) { out[k] = inputs[k].value; });
+        close(out);
+      }
+      function onKey(ev) {
+        if (ev.key === "Escape") { ev.preventDefault(); close(null); return; }
+        if (ev.key === "Enter" && ev.target && ev.target.tagName !== "TEXTAREA") { ev.preventDefault(); submit(); }
+      }
+      cancelBtn.addEventListener("click", function () { close(null); });
+      okBtn.addEventListener("click", submit);
+      mask.addEventListener("click", function (ev) { if (ev.target === mask) close(null); });
+      document.addEventListener("keydown", onKey);
+      actions.appendChild(cancelBtn);
+      actions.appendChild(okBtn);
+      box.appendChild(actions);
+      mask.appendChild(box);
+      document.body.appendChild(mask);
+      var first = box.querySelector("input, textarea");
+      if (first) { first.focus(); if (first.select) first.select(); }
+    });
+  }
+  function uiConfirm(message, opts) {
+    opts = opts || {};
+    return uiDialog({
+      title: opts.title || "确认",
+      message: message,
+      okText: opts.okText || "确定",
+      cancelText: opts.cancelText || "取消"
+    }).then(function (res) { return res !== null; });
+  }
+
+  function apiGet(endpoint, params) {
+    var b = getBridge();
+    if (!b) return Promise.reject(new Error("没连上 AstrBot 页面桥，请从 AstrBot 网页的插件页面打开"));
+    return b.apiGet(endpoint, params || {});
+  }
+  function apiPost(endpoint, body) {
+    var b = getBridge();
+    if (!b) return Promise.reject(new Error("没连上 AstrBot 页面桥，请从 AstrBot 网页的插件页面打开"));
+    return b.apiPost(endpoint, body || {});
+  }
+
+  function fmtTime(value) {
+    if (!value) return "-";
+    var num = typeof value === "number" ? value : parseFloat(value);
+    if (isNaN(num)) return String(value);
+    var ms = num > 1e12 ? num : (num > 1e9 ? num * 1000 : num);
+    var d = new Date(ms);
+    if (isNaN(d.getTime())) return String(value);
+    var p = function (n) { return n < 10 ? "0" + n : "" + n; };
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+  }
+  function fmtRatio(value) {
+    var num = parseFloat(value);
+    if (isNaN(num)) return "-";
+    return (num * 100).toFixed(1) + "%";
+  }
+  function fmtSize(bytes) {
+    var num = parseFloat(bytes);
+    if (isNaN(num)) return "-";
+    if (num < 1024) return num + " B";
+    if (num < 1024 * 1024) return (num / 1024).toFixed(1) + " KB";
+    return (num / 1024 / 1024).toFixed(2) + " MB";
+  }
+
+  // ------------------------------------------------------------- tabs
+  Array.prototype.forEach.call(document.querySelectorAll("#tabs button"), function (btn) {
+    btn.addEventListener("click", function () {
+      Array.prototype.forEach.call(document.querySelectorAll("#tabs button"), function (b) { b.classList.remove("active"); });
+      btn.classList.add("active");
+      var name = btn.getAttribute("data-tab");
+      Array.prototype.forEach.call(document.querySelectorAll("section.tab"), function (s) { s.classList.remove("active"); });
+      $("tab-" + name).classList.add("active");
+      if (name === "backup") loadBackups();
+      if (name === "config") loadConfig();
+      if (name === "context") loadContext();
+      if (name === "overview") loadOverview();
+      if (name === "interest") loadOverview(true);
+    });
+  });
+
+  // --------------------------------------------------------- overview
+  function renderStats(ov) {
+    var box = $("ov-stats");
+    box.innerHTML = "";
+    var stats = ov.stats || {};
+    var items = [
+      ["人格", stats.personas || 0],
+      ["人格夹", stats.folders || 0],
+      ["配置档案", stats.profiles || 0],
+      ["兴趣", stats.interests || 0],
+      ["备份", stats.backups || 0]
+    ];
+    items.forEach(function (pair) {
+      var node = el("div", "stat");
+      node.appendChild(el("div", "k", pair[0]));
+      node.appendChild(el("div", "v", pair[1]));
+      box.appendChild(node);
+    });
+    var ctx = ov.context || {};
+    var ctxNode = el("div", "stat");
+    ctxNode.appendChild(el("div", "k", "上下文"));
+    var ctxValue = ctx.ratio === undefined || ctx.ratio === null ? "-" : fmtRatio(ctx.ratio);
+    ctxNode.appendChild(el("div", "v", ctxValue));
+    box.appendChild(ctxNode);
+  }
+  function renderCommand(ov) {
+    var box = $("ov-command");
+    if (!box) return;
+    var c = (ov || {}).command || {};
+    var platforms = c.platforms || [];
+    if (!platforms.length) { box.textContent = ""; return; }
+    var scope = platforms.indexOf("*") >= 0 ? "所有机器人" : platforms.join("、");
+    var chats = [];
+    if (c.private_enabled) chats.push("私聊");
+    if (c.group_enabled) chats.push("群聊");
+    var text = "指令入口：" + scope + "（" + (chats.length ? chats.join(" + ") : "未开启任何会话类型") + "）";
+    text += c.master_only ? " · 只允许主人" : " · 所有成员都能用";
+    if (c.group_master_ids && c.group_master_ids.length) {
+      text += " · 群成员白名单 " + c.group_master_ids.length + " 个";
+    }
+    box.textContent = text;
+  }
+  function renderPersonas(ov) {
+    var box = $("ov-personas");
+    box.innerHTML = "";
+    var rows = ov.personas || [];
+    if (!rows.length) { box.appendChild(el("div", "empty", "还没有人格")); return; }
+    var table = el("table");
+    var head = el("tr");
+    ["人格 ID", "工具", "提示词长度", "人格夹", "排序"].forEach(function (t) { head.appendChild(el("th", "", t)); });
+    table.appendChild(head);
+    rows.forEach(function (p) {
+      var tr = el("tr");
+      tr.appendChild(el("td", "", p.persona_id));
+      tr.appendChild(el("td", "", p.tools));
+      tr.appendChild(el("td", "", p.prompt_len));
+      var folder = p.folder_id || "-";
+      for (var i = 0; i < (ov.folders || []).length; i++) {
+        if (ov.folders[i].folder_id === p.folder_id) { folder = ov.folders[i].name; break; }
+      }
+      tr.appendChild(el("td", "", folder));
+      tr.appendChild(el("td", "", p.sort_order));
+      table.appendChild(tr);
+    });
+    box.appendChild(table);
+  }
+  function renderProfiles(ov) {
+    var pbox = $("ov-profiles");
+    pbox.innerHTML = "";
+    var profiles = ov.profiles || [];
+    if (!profiles.length) { pbox.appendChild(el("div", "empty", "没有配置档案")); }
+    else {
+      var wrap = el("div");
+      profiles.forEach(function (p) {
+        wrap.appendChild(el("span", "chip", p.name + " (" + p.id + ")"));
+      });
+      pbox.appendChild(wrap);
+    }
+    var fbox = $("ov-folders");
+    fbox.innerHTML = "";
+    var folders = ov.folders || [];
+    if (!folders.length) { fbox.appendChild(el("div", "empty", "没有人格夹")); return; }
+    folders.forEach(function (f) { fbox.appendChild(el("span", "chip", f.name)); });
+  }
+  function renderBackupPolicy(ov) {
+    var box = $("ov-backup-policy");
+    var backup = (ov.sections || {}).backup || {};
+    var enabled = backup.enabled !== false;
+    var hour = backup.hour === undefined ? 3 : backup.hour;
+    var minute = backup.minute === undefined ? 0 : backup.minute;
+    var keep = backup.keep === undefined ? 3 : backup.keep;
+    var pad = function (n) { return n < 10 ? "0" + n : "" + n; };
+    box.innerHTML = "";
+    box.appendChild(el("div", "", "每晚 " + pad(hour) + ":" + pad(minute) + " 自动备份人格资料，只保留最新 " + keep + " 份（当前" + (enabled ? "已开启" : "已关闭") + "）。"));
+    box.appendChild(el("div", "muted", "备份内容：人格、人格夹、配置档案、配置路由、本插件配置、兴趣库。"));
+  }
+  function loadOverview(silent) {
+    return apiGet("page/overview").then(function (data) {
+      state.overview = data;
+      $("ver").textContent = "v" + ((data.plugin || {}).version || "");
+      $("ov-updated").textContent = "更新于 " + fmtTime(Date.now());
+      renderStats(data);
+      renderCommand(data);
+      renderPersonas(data);
+      renderProfiles(data);
+      renderBackupPolicy(data);
+      renderInterests(data);
+      renderCandidates(data);
+      if (!silent) toast("已刷新", "ok");
+    }).catch(fail);
+  }
+
+  // --------------------------------------------------------- interest
+  function renderInterests(ov) {
+    var box = $("interest-list");
+    if (!box) return;
+    box.innerHTML = "";
+    var rows = (ov || {}).interests || [];
+    if (!rows.length) { box.appendChild(el("div", "empty", "兴趣库还是空的")); return; }
+    rows.forEach(function (item) {
+      var card = el("div", "interest-item");
+      var head = el("div", "interest-head");
+      var left = el("div");
+      left.appendChild(el("span", "interest-name", item.name));
+      if (item.aliases && item.aliases.length) {
+        item.aliases.forEach(function (alias) { left.appendChild(el("span", "chip", alias)); });
+      }
+      if (item.pinned) {
+        var kindText = item.kind === "persona" ? "人设固定" : "主人相关";
+        var badge = el("span", "chip chip-pin", kindText);
+        badge.title = "这类兴趣不会因为久不聊被自动清理";
+        left.appendChild(badge);
+      } else {
+        left.appendChild(el("span", "chip", "自动"));
+      }
+      head.appendChild(left);
+      var right = el("div", "row");
+      var value = parseFloat(item.affinity);
+      right.appendChild(el("span", "muted", "兴趣度 " + (isNaN(value) ? "-" : value.toFixed(2)) + " · 提到 " + (item.mention_count || 0) + " 次"));
+      var editBtn = el("button", "mini", "编辑");
+      editBtn.addEventListener("click", function () { editInterest(item); });
+      right.appendChild(editBtn);
+      var delBtn = el("button", "mini danger", "删除");
+      delBtn.addEventListener("click", function () { removeInterest(item); });
+      right.appendChild(delBtn);
+      head.appendChild(right);
+      card.appendChild(head);
+      var bar = el("div", "bar");
+      var fill = el("i");
+      fill.style.width = Math.round((isNaN(value) ? 0 : Math.max(0, Math.min(1, value))) * 100) + "%";
+      bar.appendChild(fill);
+      card.appendChild(bar);
+      (item.notes || []).forEach(function (note) {
+        var row = el("div", "note-row");
+        var line = el("div", "note");
+        var text = note.title ? note.title + "：" + note.text : note.text;
+        if (note.url) {
+          var a = el("a", "", text);
+          a.href = note.url;
+          a.target = "_blank";
+          a.rel = "noopener noreferrer";
+          line.appendChild(a);
+        } else {
+          line.textContent = text;
+        }
+        row.appendChild(line);
+        var ops = el("div", "note-ops");
+        var editNoteBtn = el("button", "mini", "改");
+        editNoteBtn.title = "编辑这条记录";
+        editNoteBtn.addEventListener("click", function () { editNote(item, note); });
+        ops.appendChild(editNoteBtn);
+        var delNoteBtn = el("button", "mini danger", "删");
+        delNoteBtn.title = "删除这条记录";
+        delNoteBtn.addEventListener("click", function () { removeNote(item, note); });
+        ops.appendChild(delNoteBtn);
+        row.appendChild(ops);
+        card.appendChild(row);
+      });
+      box.appendChild(card);
+    });
+  }
+  function renderCandidates(ov) {
+    var box = $("candidate-list");
+    if (!box) return;
+    box.innerHTML = "";
+    var rows = (ov || {}).candidates || [];
+    if (!rows.length) { box.appendChild(el("div", "empty", "暂时没有在观察的话题")); return; }
+    rows.forEach(function (cand) {
+      var card = el("div", "interest-item");
+      var head = el("div", "interest-head");
+      var left = el("div");
+      left.appendChild(el("span", "interest-name", cand.name));
+      left.appendChild(el("span", "chip", "聊到 " + (cand.mentions || 1) + " 次"));
+      if (cand.source) left.appendChild(el("span", "chip", cand.source === "search" ? "搜到的" : "聊到的"));
+      head.appendChild(left);
+      var right = el("div", "row");
+      var lastSeen = fmtTime(cand.last_seen);
+      if (lastSeen && lastSeen !== "-") right.appendChild(el("span", "muted", "最近 " + lastSeen));
+      var promoteBtn = el("button", "mini primary", "收进兴趣");
+      promoteBtn.addEventListener("click", function () { promoteCandidate(cand); });
+      right.appendChild(promoteBtn);
+      var forgetBtn = el("button", "mini danger", "忘掉");
+      forgetBtn.addEventListener("click", function () { forgetCandidate(cand); });
+      right.appendChild(forgetBtn);
+      head.appendChild(right);
+      card.appendChild(head);
+      (cand.notes || []).forEach(function (note) {
+        var line = el("div", "note", note.title ? note.title + "：" + note.text : note.text);
+        card.appendChild(line);
+      });
+      box.appendChild(card);
+    });
+  }
+  function promoteCandidate(cand) {
+    apiPost("page/interest/candidate/promote", { id: cand.id, name: cand.name }).then(function (r) {
+      if (r && r.status === "error") { toast(r.message || "升级失败", "err"); return; }
+      toast(r.message || "已收进兴趣", "ok");
+      loadOverview(true);
+    }).catch(fail);
+  }
+  function forgetCandidate(cand) {
+    uiConfirm("确定忘掉临时话题「" + cand.name + "」？", { okText: "忘掉" }).then(function (yes) {
+      if (!yes) return;
+      apiPost("page/interest/candidate/forget", { id: cand.id, name: cand.name }).then(function (r) {
+        if (r && r.status === "error") { toast(r.message || "取消失败", "err"); return; }
+        toast(r.message || "已经忘掉", "ok");
+        loadOverview(true);
+      }).catch(fail);
+    });
+  }
+  function editInterest(item) {
+    uiDialog({
+      title: "编辑兴趣「" + item.name + "」",
+      fields: [
+        { key: "affinity", label: "兴趣度（0~1）", value: item.affinity },
+        { key: "aliases", label: "别名（用逗号分隔，留空表示清掉）", value: (item.aliases || []).join(",") },
+        { key: "note", label: "追加一条记录（留空跳过）", value: "", multiline: true }
+      ],
+      okText: "保存"
+    }).then(function (res) {
+      if (!res) return;
+      var value = parseFloat(res.affinity);
+      if (isNaN(value)) value = item.affinity;
+      apiPost("page/interest/update", {
+        id: item.id, name: item.name, affinity: value, aliases: res.aliases, note: (res.note || "").trim()
+      }).then(function (r) {
+        if (r && r.status === "error") { toast(r.message || "保存失败", "err"); return; }
+        toast("已保存", "ok");
+        loadOverview(true);
+      }).catch(fail);
+    });
+  }
+  function removeInterest(item) {
+    uiConfirm("确定删掉兴趣「" + item.name + "」？", { okText: "删除" }).then(function (yes) {
+      if (!yes) return;
+      apiPost("page/interest/remove", { id: item.id, name: item.name })
+        .then(function (r) {
+          if (r && r.status === "error") { toast(r.message || "删除失败", "err"); return; }
+          toast("已删除", "ok");
+          loadOverview(true);
+        }).catch(fail);
+    });
+  }
+  function editNote(item, note) {
+    if (!note.id) { toast("这条记录缺少 ID，刷新一下再试", "err"); return; }
+    uiDialog({
+      title: "编辑「" + item.name + "」的一条记录",
+      fields: [
+        { key: "title", label: "标题（可留空）", value: note.title || "" },
+        { key: "text", label: "记录内容", value: note.text || "", multiline: true },
+        { key: "url", label: "链接（可留空）", value: note.url || "" }
+      ],
+      okText: "保存"
+    }).then(function (res) {
+      if (!res) return;
+      if (!String(res.text || "").trim()) { toast("记录内容不能为空", "err"); return; }
+      apiPost("page/interest/note/update", {
+        interest_id: item.id, note_id: note.id, title: res.title, text: res.text, url: res.url
+      }).then(function (r) {
+        if (r && r.status === "error") { toast(r.message || "保存失败", "err"); return; }
+        toast("记录已更新", "ok");
+        loadOverview(true);
+      }).catch(fail);
+    });
+  }
+  function removeNote(item, note) {
+    if (!note.id) { toast("这条记录缺少 ID，刷新一下再试", "err"); return; }
+    var preview = (note.title ? note.title + "：" : "") + (note.text || "");
+    if (preview.length > 60) preview = preview.slice(0, 60) + "…";
+    uiConfirm("确定删掉这条记录？\n\n" + preview, { okText: "删除" }).then(function (yes) {
+      if (!yes) return;
+      apiPost("page/interest/note/delete", { interest_id: item.id, note_id: note.id })
+        .then(function (r) {
+          if (r && r.status === "error") { toast(r.message || "删除失败", "err"); return; }
+          toast("记录已删除", "ok");
+          loadOverview(true);
+        }).catch(fail);
+    });
+  }
+  function addInterest() {
+    var name = $("interest-name").value.trim();
+    if (!name) { toast("先填兴趣名字", "err"); return; }
+    apiPost("page/interest/add", {
+      name: name,
+      aliases: $("interest-aliases").value,
+      affinity: parseFloat($("interest-affinity").value) || 0.7
+    }).then(function () {
+      $("interest-name").value = "";
+      $("interest-aliases").value = "";
+      toast("已添加", "ok");
+      loadOverview(true);
+    }).catch(fail);
+  }
+  function searchInterest() {
+    var topic = $("interest-search-topic").value.trim();
+    if (!topic) { toast("先填要搜的主题", "err"); return; }
+    var box = $("interest-search-result");
+    box.textContent = "搜索中…";
+    apiPost("page/interest/search", { topic: topic }).then(function (data) {
+      var results = (data && data.results) || [];
+      box.innerHTML = "";
+      if (!results.length) { box.textContent = "没搜到结果，或者搜索服务不可用。"; return; }
+      results.forEach(function (r) {
+        var line = el("div", "note");
+        var a = el("a", "", r.title || r.url || "结果");
+        if (r.url) { a.href = r.url; a.target = "_blank"; a.rel = "noopener noreferrer"; }
+        line.appendChild(a);
+        box.appendChild(line);
+      });
+      toast("搜到 " + results.length + " 条，已记进兴趣库", "ok");
+      loadOverview(true);
+    }).catch(function (err) { box.textContent = ""; fail(err); });
+  }
+
+  // ----------------------------------------------------------- backup
+  function loadBackups() {
+    apiGet("page/backups").then(function (data) {
+      var keep = (data || {}).keep;
+      var policy = $("backup-policy");
+      if (policy) policy.textContent = keep ? "保留最新 " + keep + " 份" : "";
+      var box = $("backup-list");
+      box.innerHTML = "";
+      var rows = (data || {}).backups || [];
+      if (!rows.length) { box.appendChild(el("div", "empty", "还没有备份")); return; }
+      var table = el("table");
+      var head = el("tr");
+      ["文件", "大小", "时间", "操作"].forEach(function (t) { head.appendChild(el("th", "", t)); });
+      table.appendChild(head);
+      rows.forEach(function (row) {
+        var tr = el("tr");
+        tr.appendChild(el("td", "", row.filename));
+        tr.appendChild(el("td", "", fmtSize(row.size)));
+        tr.appendChild(el("td", "", fmtTime(row.created_at || row.mtime)));
+        var ops = el("td");
+        var opsRow = el("div", "row");
+        var dl = el("button", "mini", "下载");
+        dl.addEventListener("click", function () {
+          if (bridge && bridge.download) {
+            bridge.download("page/backup/download", { filename: row.filename }, row.filename)
+              .then(function () { toast("已开始下载", "ok"); }).catch(fail);
+          } else { fail(new Error("页面桥不支持下载")); }
+        });
+        opsRow.appendChild(dl);
+        var rs = el("button", "mini", "恢复");
+        rs.addEventListener("click", function () { restoreBackup(row.filename); });
+        opsRow.appendChild(rs);
+        var del = el("button", "mini danger", "删除");
+        del.addEventListener("click", function () {
+          uiConfirm("删除备份 " + row.filename + "？", { okText: "删除" }).then(function (yes) {
+            if (!yes) return;
+            apiPost("page/backup/delete", { filename: row.filename })
+              .then(function () { toast("已删除", "ok"); loadBackups(); loadOverview(true); }).catch(fail);
+          });
+        });
+        opsRow.appendChild(del);
+        ops.appendChild(opsRow);
+        tr.appendChild(ops);
+        table.appendChild(tr);
+      });
+      box.appendChild(table);
+    }).catch(fail);
+  }
+  function restoreBackup(filename) {
+    uiConfirm("用 " + filename + " 覆盖当前人格与配置？这个动作会写回人格、配置档案和插件配置。", { okText: "恢复" })
+      .then(function (yes) {
+        if (!yes) return;
+        apiPost("page/backup/restore", { filename: filename }).then(function () {
+          toast("已恢复，插件会热重载", "ok");
+          setTimeout(function () { loadOverview(true); }, 1500);
+        }).catch(fail);
+      });
+  }
+  function createBackup() {
+    apiPost("page/backup/create", {}).then(function (data) {
+      var name = data && data.filename ? data.filename : "";
+      toast("已备份" + (name ? "：" + name : ""), "ok");
+      loadBackups(); loadOverview(true);
+    }).catch(fail);
+  }
+  function importBackup(file) {
+    if (!bridge || !bridge.upload) { fail(new Error("页面桥不支持上传")); return; }
+    var box = $("backup-import-result");
+    box.textContent = "导入中…";
+    bridge.upload("page/backup/import", file).then(function () {
+      box.textContent = "导入完成：" + file.name;
+      toast("导入完成", "ok");
+      loadBackups(); loadOverview(true);
+    }).catch(function (err) { box.textContent = ""; fail(err); });
+  }
+
+  // ----------------------------------------------------------- config
+  function fieldValueType(value) {
+    if (typeof value === "boolean") return "bool";
+    if (typeof value === "number") return Number.isInteger(value) ? "int" : "float";
+    if (Array.isArray(value)) return "list";
+    if (value === null || value === undefined) return "string";
+    return "string";
+  }
+  function renderConfig(data) {
+    var box = $("config-sections");
+    box.innerHTML = "";
+    var sections = (data || {}).sections || {};
+    var titles = (data || {}).titles || {};
+    var meta = (data || {}).meta || {};
+    Object.keys(sections).forEach(function (key) {
+      if (key === "page") return;
+      var values = sections[key] || {};
+      var metaSec = meta[key] || {};
+      var details = el("details", "sec");
+      if (key === "owner" || key === "interest") details.open = true;
+      details.appendChild(el("summary", "", titles[key] || key));
+      var grid = el("div", "grid2");
+      Object.keys(values).forEach(function (name) {
+        var value = values[name];
+        var type = fieldValueType(value);
+        var fieldMeta = metaSec[name] || {};
+        var labelText = fieldMeta.description || name;
+        var label = el("label", type === "bool" ? "field inline" : "field");
+        if (fieldMeta.description) label.title = name;
+        if (type !== "bool") {
+          var lbl = el("span", "lbl", labelText);
+          label.appendChild(lbl);
+        }
+        var input;
+        if (type === "bool") {
+          input = document.createElement("input");
+          input.type = "checkbox";
+          input.checked = value === true;
+          input.setAttribute("data-name", name);
+          input.setAttribute("data-type", "bool");
+          label.appendChild(input);
+          label.appendChild(el("span", "lbl", labelText));
+        } else {
+          input = null;
+          if (type === "int" || type === "float") {
+            input = document.createElement("input");
+            input.type = "number";
+            input.step = type === "int" ? "1" : "0.01";
+            input.value = value;
+          } else if (type === "list") {
+            input = document.createElement("input");
+            input.type = "text";
+            input.value = (value || []).join(",");
+          } else {
+            var str = value === null || value === undefined ? "" : String(value);
+            if (str.length > 60 || str.indexOf("\n") >= 0) {
+              input = document.createElement("textarea");
+            } else {
+              input = document.createElement("input");
+              input.type = "text";
+            }
+            input.value = str;
+          }
+          input.setAttribute("data-name", name);
+          input.setAttribute("data-type", type);
+          label.appendChild(input);
+        }
+        grid.appendChild(label);
+      });
+      details.appendChild(grid);
+      var row = el("div", "row");
+      row.style.marginTop = "10px";
+      var save = el("button", "primary", "保存 " + (titles[key] || key));
+      save.addEventListener("click", function () { saveSection(key, details, save); });
+      row.appendChild(save);
+      var reset = el("button", "", "还原修改");
+      reset.addEventListener("click", function () { loadConfig(true); });
+      row.appendChild(reset);
+      details.appendChild(row);
+      box.appendChild(details);
+    });
+  }
+  function saveSection(key, details, btn) {
+    var values = {};
+    var inputs = details.querySelectorAll("[data-name]");
+    Array.prototype.forEach.call(inputs, function (input) {
+      var name = input.getAttribute("data-name");
+      var type = input.getAttribute("data-type");
+      if (type === "bool") {
+        values[name] = input.checked;
+      } else if (type === "int") {
+        var intValue = parseInt(input.value, 10);
+        values[name] = isNaN(intValue) ? 0 : intValue;
+      } else if (type === "float") {
+        var floatValue = parseFloat(input.value);
+        values[name] = isNaN(floatValue) ? 0 : floatValue;
+      } else if (type === "list") {
+        values[name] = String(input.value || "").split(/[,，]/).map(function (s) { return s.trim(); }).filter(function (s) { return s !== ""; });
+      } else {
+        values[name] = String(input.value === undefined ? "" : input.value);
+      }
+    });
+    btn.disabled = true;
+    apiPost("page/config/save", { section: key, values: values }).then(function () {
+      toast("已保存配置，插件正在热重载", "ok");
+      btn.disabled = false;
+      setTimeout(function () { loadConfig(true); }, 2000);
+    }).catch(function (err) { btn.disabled = false; fail(err); });
+  }
+  function loadConfig(silent) {
+    apiGet("page/config").then(function (data) {
+      state.config = data;
+      renderConfig(data);
+      if (!silent) toast("配置已加载", "ok");
+    }).catch(fail);
+  }
+
+  // ---------------------------------------------------------- context
+  function money(v) {
+    var n = Number(v || 0);
+    if (n >= 100) return "\u00a5" + n.toFixed(1);
+    if (n >= 1) return "\u00a5" + n.toFixed(2);
+    return "\u00a5" + n.toFixed(4);
+  }
+  function ctxColor(ratio) {
+    return ratio >= 0.82 ? "var(--err)" : (ratio >= 0.6 ? "var(--warn)" : "var(--accent)");
+  }
+  function ctxTile(label, value, sub) {
+    var tile = el("div", "ctx-tile");
+    tile.appendChild(el("span", "ctx-tile-label", label));
+    tile.appendChild(el("b", "", value));
+    if (sub) {
+      var s = el("div", "muted", sub);
+      s.style.marginTop = "2px";
+      tile.appendChild(s);
+    }
+    return tile;
+  }
+  function ctxRow(label, kindText, ratio, metaLeft, metaRight) {
+    var row = el("div", "ctx-row");
+    var head = el("div", "ctx-head");
+    head.appendChild(el("span", "ctx-name", label));
+    var tags = el("span");
+    tags.appendChild(el("span", "chip", kindText));
+    head.appendChild(tags);
+    row.appendChild(head);
+    if (typeof ratio === "number") {
+      var bar = el("div", "bar");
+      var fill = el("i");
+      fill.style.width = Math.min(100, Math.max(1, Math.round(ratio * 100))) + "%";
+      fill.style.background = ctxColor(ratio);
+      bar.appendChild(fill);
+      row.appendChild(bar);
+    }
+    var meta = el("div", "ctx-meta");
+    meta.appendChild(el("span", "", metaLeft || ""));
+    meta.appendChild(el("span", "", metaRight || ""));
+    row.appendChild(meta);
+    return row;
+  }
+  function renderCost(cost, rows) {
+    var box = $("ctx-cost-tiles");
+    var list = $("ctx-cost-list");
+    box.innerHTML = "";
+    list.innerHTML = "";
+    if (!cost || !cost.enabled) {
+      $("ctx-cost-hint").textContent = "费用统计关着（配置 \u2192 费用计算 里打开）";
+      return;
+    }
+    if (cost.error) {
+      $("ctx-cost-hint").textContent = "读不出来：" + cost.error;
+      return;
+    }
+    var totals = cost.totals || {};
+    var today = cost.today || {};
+    var month = cost.month || {};
+    var pv = cost.peak_valley || {};
+    if (pv.enabled) {
+      var pp = pv.peak_prices || {};
+      var op = pv.offpeak_prices || {};
+      $("ctx-cost-hint").textContent = "峰谷价 · 峰时 " + money(pp.input) + " / " + money(pp.cached_input) + " / " + money(pp.output)
+        + " · 空闲 " + money(op.input) + " / " + money(op.cached_input) + " / " + money(op.output)
+        + " 每百万 token（输入未命中 / 命中 / 输出；峰时 " + (pv.ranges || "09:00-12:00,14:00-18:00") + (pv.weekdays_only ? "，仅工作日" : "") + "）"
+        + " · 峰时 " + (pv.peak_requests || 0) + " 次 " + money(pv.peak_cost) + " / 空闲 " + (pv.offpeak_requests || 0) + " 次 " + money(pv.offpeak_cost);
+    } else {
+      $("ctx-cost-hint").textContent = "牌价 " + money(cost.prices && cost.prices.input) + " / " + money(cost.prices && cost.prices.cached_input) + " / " + money(cost.prices && cost.prices.output) + " 每百万 token（输入未命中 / 命中 / 输出）";
+    }
+    box.appendChild(ctxTile("累计花费", money(totals.cost), (totals.requests || 0) + " 次请求 · " + (totals.tokens_text || "0") + " token"));
+    box.appendChild(ctxTile("今日", money(today.cost), (today.requests || 0) + " 次请求"));
+    box.appendChild(ctxTile("本月", money(month.cost), (month.requests || 0) + " 次请求"));
+    var rws = cost.rows || [];
+    if (!rws.length) {
+      list.appendChild(el("div", "muted", "还没有调用记录。"));
+      return;
+    }
+    rws.forEach(function (item) {
+      var row = el("div", "ctx-row");
+      var head = el("div", "ctx-head");
+      head.appendChild(el("span", "ctx-name", item.label || item.umo || "会话"));
+      var tags = el("span");
+      tags.appendChild(el("span", "chip", item.kind === "group" ? "群聊" : "私聊"));
+      tags.appendChild(el("span", "chip", item.cost_text || money(item.cost)));
+      head.appendChild(tags);
+      row.appendChild(head);
+      var meta = el("div", "ctx-meta");
+      meta.appendChild(el("span", "", (item.requests || 0) + " 次 · " + (item.tokens_text || "0") + " token · 输入 " + (item.input_other || 0) + " / 缓存 " + (item.input_cached || 0) + " / 输出 " + (item.output || 0)));
+      meta.appendChild(el("span", "", "最近 " + (item.last_at_text || "--")));
+      row.appendChild(meta);
+      list.appendChild(row);
+    });
+    var budget = cost.budget;
+    $("ctx-cost-note").textContent = budget
+      ? ("本月预算 " + budget.text + "，已用 " + money(budget.used) + "（" + Math.round((budget.ratio || 0) * 100) + "%）。群里也能看到每个私聊单独的账单。")
+      : "私聊、群聊分开算；每晚 0 点报告和 /费用 都会带上这份账单。";
+  }
+  function renderContext(status) {
+    var ctx = status || (state.overview && state.overview.context) || {};
+    var st = ctx.stats || {};
+    var tiles = $("ctx-tiles");
+    tiles.innerHTML = "";
+    tiles.appendChild(ctxTile("对话总数", st.total || 0, "群聊 " + (st.groups || 0) + " · 私聊 " + (st.privates || 0)));
+    tiles.appendChild(ctxTile("已压缩过", st.compressed || 0, "压下来的记忆还在"));
+    tiles.appendChild(ctxTile("接近提醒阈值", st.near_limit || 0, "阈值 " + fmtRatio(ctx.warn_ratio === undefined ? 0.75 : ctx.warn_ratio)));
+    tiles.appendChild(ctxTile("消息总数", st.messages || 0, "所有对话加起来"));
+    var ga = ctx.group_auto || {};
+    $("ctx-groupbar").textContent = ga.enabled
+      ? ("群聊自动压缩：开着 · 余量到 " + fmtRatio(ga.auto_ratio) + " / 安静 " + (ga.idle_minutes === undefined ? 30 : ga.idle_minutes) + " 分钟 / 每天 " + (ga.daily_hour === undefined ? 4 : ga.daily_hour) + " 点各整理一次 · 每 " + (ga.check_interval_seconds || 120) + " 秒巡检")
+      : "群聊自动压缩：关着（可在「配置 → 上下文守护」里打开）。";
+    var sp = ctx.speaker || {};
+    $("ctx-speaker").textContent = sp.enabled
+      ? ("群聊发言记录：开着（记了 " + (sp.groups || 0) + " 个群 / " + (sp.lines || 0) + " 条，她回答时知道群里谁说了什么）")
+      : "群聊发言记录：关着（配置 → 群聊发言记录）。";
+    var eg = ctx.engaged || {};
+    $("ctx-engaged").textContent = eg.enabled
+      ? ("续聊：开着 · 最多连 " + (eg.max_turns || 6) + " 句 / 盯 " + (eg.window_seconds || 180) + " 秒 / 概率 " + Math.round(eg.probability || 80) + "% · 现在在续聊 " + (eg.count || 0) + " 个群")
+      : "续聊：关着（配置 → 群聊唤醒）。";
+    var lv = eg.lively || {};
+    $("ctx-lively").textContent = lv.enabled
+      ? ("群里热闹加成：窗口 " + (lv.window_seconds || 120) + " 秒 · 超过 " + (lv.min_messages || 6) + " 条开始加 · 最多 ×" + (lv.max_boost || 3) + " · 现在 " + (lv.count || 0) + " 个群正热闹" + (lv.top ? "（" + lv.top + "）" : ""))
+      : "群里热闹加成：关着（配置 → 群聊唤醒）。";
+    var restore = ctx.persona_restore;
+    $("ctx-restore").textContent = (restore && restore.text)
+      ? ("上次人格资料复原：" + fmtTime(restore.at) + "（剩余 " + (restore.turns || 0) + " 轮）")
+      : "";
+    var sl = ctx.sleep || {};
+    var stt = $("ctx-sleep-tiles");
+    stt.innerHTML = "";
+    if (sl.enabled === false) {
+      stt.appendChild(ctxTile("现在", "关着", "睡眠模式没开"));
+      $("ctx-sleep-detail").textContent = "睡眠模式关着。要打开：配置 → 睡眠模式。";
+      $("ctx-sleep-stats").textContent = "";
+    } else {
+      var qh = sl.quiet_hour === undefined ? 1 : sl.quiet_hour;
+      var sh = sl.sleep_hour === undefined ? 2 : sl.sleep_hour;
+      var wh = sl.wake_hour === undefined ? 6 : sl.wake_hour;
+      var wj = sl.wake_jitter_minutes || 0;
+      stt.appendChild(ctxTile("现在", sl.phase_text || (sl.sleeping ? "睡着了" : "醒着"), "安静 " + qh + " 点 / 睡 " + sh + " 点 / 醒 " + wh + " 点 +" + wj + " 分"));
+      stt.appendChild(ctxTile("排队等回复", (sl.pending_master || 0) + (sl.pending_other || 0), "主人 " + (sl.pending_master || 0) + " 条 · 别人私聊 " + (sl.pending_other || 0) + " 条"));
+      stt.appendChild(ctxTile("群聊攒着", sl.group_messages || 0, (sl.groups || 0) + " 个群，早上只回被叫到或聊到兴趣的"));
+      var wakeShort = sl.wake_at ? String(sl.wake_at).slice(11, 16) : "—";
+      stt.appendChild(ctxTile("预计醒来", wakeShort, sl.sleeping ? ("睡于 " + (String(sl.sleep_at_text || "").slice(11, 16) || "—")) : "现在没在睡"));
+      $("ctx-sleep-detail").textContent = "规则：每天 " + qh + " 点起群里和别人私聊只记不回；" + sh + " 点起（或主人私聊说晚安后立刻）连主人消息也排队，早上 " + wh + " 点后随机 " + wj + " 分钟内醒来统一处理。睡着时只有主人私聊发「起床 / 醒醒 / 强制唤醒」或 /睡眠 醒 才能叫醒她。";
+      var ss = sl.stats || {};
+      $("ctx-sleep-stats").textContent = "夜里拦下的消息：安静期 " + (ss.quiet_skipped || 0) + " 条 · 睡着 " + (ss.sleep_skipped || 0) + " 条 · 醒过 " + (ss.wake_runs || 0) + " 次 · 早上补回群聊 " + (ss.catchup_replies || 0) + " 个";
+    }
+    var rows = ctx.conversations || [];
+    var costData = ctx.cost || {};
+    var costByUmo = {};
+    (costData.rows || []).forEach(function (row) { costByUmo[row.umo] = row; });
+    renderCost(costData, rows);
+    var list = $("ctx-list");
+    list.innerHTML = "";
+    if (!rows.length) {
+      list.appendChild(el("div", "muted", "还没有对话。"));
+    } else {
+      rows.forEach(function (item) {
+        var ratio = parseFloat(item.ratio);
+        if (isNaN(ratio)) ratio = 0;
+        var left = (item.messages || 0) + " 条 · 约 " + Number(item.used || 0).toLocaleString() + " / " + Number(item.limit || 0).toLocaleString() + " token · " + fmtRatio(ratio);
+        var costOf = costByUmo[item.umo];
+        if (costOf) left += " · " + (costOf.cost_text || "");
+        var right = item.summary ? "已压缩 · " : "";
+        if (item.updated_at) right += "最近 " + fmtTime(item.updated_at * 1000);
+        var row = ctxRow(item.label || item.umo || "会话", item.kind === "group" ? "群聊" : "私聊", ratio, left, right);
+        if (item.summary) {
+          var hint = el("div", "muted", "压缩记忆：" + String(item.summary_text || "").slice(0, 90) + "（" + (item.summary_len || 0) + " 字）");
+          hint.style.marginTop = "4px";
+          row.appendChild(hint);
+        }
+        list.appendChild(row);
+      });
+    }
+    var summaries = ctx.summaries || {};
+    var keys = Object.keys(summaries);
+    $("ctx-summaries-hint").textContent = keys.length ? ("共 " + keys.length + " 个会话") : "";
+    var sbox = $("ctx-summaries");
+    sbox.innerHTML = "";
+    if (!keys.length) {
+      sbox.appendChild(el("div", "muted", "还没有压缩过的会话。私聊发 /压缩，或等群聊自动整理。"));
+    } else {
+      var byCid = {};
+      rows.forEach(function (item) { if (item.cid) byCid[item.cid] = item; });
+      keys.forEach(function (cid) {
+        var item = summaries[cid] || {};
+        var info = byCid[cid] || {};
+        var text = String(item.text || "");
+        var row = el("div", "ctx-row");
+        var head = el("div", "ctx-head");
+        head.appendChild(el("span", "ctx-name", info.label || cid));
+        head.appendChild(el("span", "chip", (item.compressed_messages || 0) + " 条 → " + (item.summary_len || text.length) + " 字"));
+        row.appendChild(head);
+        var preview = el("div", "muted", text.slice(0, 180));
+        preview.style.marginTop = "6px";
+        row.appendChild(preview);
+        var when = el("div", "muted", item.at ? ("压缩时间 " + fmtTime(item.at)) : "");
+        when.style.marginTop = "4px";
+        row.appendChild(when);
+        sbox.appendChild(row);
+      });
+    }
+  }
+  function loadContext() {
+    apiGet("page/context").then(function (data) {
+      $("ctx-updated").textContent = "更新于 " + fmtTime(Date.now());
+      renderContext(data);
+    }).catch(fail);
+  }
+
+  // ------------------------------------------------------------ boot
+  function boot(b) {
+    bridge = b || getBridge();
+    $("btn-refresh").addEventListener("click", function () {
+      loadOverview();
+      loadBackups();
+      loadConfig(true);
+      loadContext();
+    });
+    $("btn-interest-add").addEventListener("click", addInterest);
+    $("btn-interest-search").addEventListener("click", searchInterest);
+    $("btn-backup-create").addEventListener("click", createBackup);
+    $("btn-ctx-refresh").addEventListener("click", loadContext);
+    $("backup-file").addEventListener("change", function (event) {
+      var file = event.target.files && event.target.files[0];
+      if (file) importBackup(file);
+      event.target.value = "";
+    });
+    if (bridge && bridge.ready) {
+      bridge.ready().catch(function () {});
+    }
+    if (bridge && bridge.onContext) {
+      bridge.onContext(function (ctx) {
+        if (!ctx || typeof ctx.isDark !== "boolean") return;
+        document.documentElement.setAttribute("data-theme", ctx.isDark ? "dark" : "light");
+      });
+    }
+    loadOverview(true);
+  }
+  function waitBridge(attempt) {
+    var b = getBridge();
+    if (b || attempt > 150) {
+      bridge = b || null;
+      boot(b);
+      return;
+    }
+    setTimeout(function () { waitBridge(attempt + 1); }, 100);
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function () { waitBridge(0); });
+  } else {
+    waitBridge(0);
+  }
+})();
+</script>
+</body>
+</html>
