@@ -36,6 +36,11 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.event.filter import CustomFilter
 from astrbot.api.star import Context, Star, register
 
+try:  # 协议端内置命令静默词表（例如 aiocqhttp 的 #sl），加载失败不影响主流程
+    from . import silent_guard
+except Exception:
+    silent_guard = None
+
 DEFAULTS = {
     'enabled': True,
     'bot_filter': [],
@@ -48,30 +53,49 @@ DEFAULTS = {
     'random_reply_min_chars': 4,
     'engaged_enabled': True,
     'engaged_probability': 80,
-    'engaged_min_score': 0.2,
+    'engaged_min_score': 0.3,
     'engaged_window_seconds': 240,
     'engaged_idle_seconds': 120,
     'engaged_max_turns': 6,
-    'engaged_cooldown_seconds': 10,
+    'engaged_cooldown_seconds': 12,
     'engaged_grace_seconds': 90,
+    'engaged_same_sender_seconds': 20,
     'engaged_use_interest': True,
     'lively_boost_enabled': True,
     'lively_window_seconds': 120,
     'lively_min_messages': 6,
     'lively_max_boost': 3.0,
     'master_reply_enabled': True,
-    'master_reply_probability': 85,
-    'master_reply_cooldown_seconds': 20,
+    'master_reply_probability': 100,
+    'master_reply_cooldown_seconds': 6,
+    # 社交分寸（治「自作多情」）：不是冲她来的定向发言不随机插话、她说太多就自动让一让、
+    # 被群友明说「没跟你说话/别插嘴」就安静一会儿。
+    'random_skip_directed': True,
+    'engaged_directed_min_score': 0.6,
+    'self_share_enabled': True,
+    'self_share_window_seconds': 300,
+    'self_share_min_messages': 10,
+    'self_share_max_ratio': 0.35,
+    'retort_silence_enabled': True,
+    'retort_silence_minutes': 10,
 }
 
 _RUNTIME: dict = dict(DEFAULTS)
 _LAST_WAKE: dict[str, float] = {}
 _LAST_RANDOM: dict[str, float] = {}
 _LAST_ENGAGED: dict[str, float] = {}
+_LAST_ENGAGED_SENDER: dict[str, tuple[str, float]] = {}
 _LAST_MASTER: dict[str, float] = {}
 _ENGAGED: dict[str, dict[str, Any]] = {}
 _RECENT_USER: dict[str, list[dict[str, Any]]] = {}
 _ACTIVITY: dict[str, list[float]] = {}
+_MY_REPLIES: dict[str, list[float]] = {}   # umo -> 她最近在这个群发言的时间戳
+_RETORT_UNTIL: dict[str, float] = {}       # 群 -> 被嫌弃后安静到什么时候
+# 群友明说她插嘴 / 自作多情时用的话术（命中就闭嘴一阵子，别再顶上去招人烦）
+_RETORT_WORDS = (
+    '没跟你说话', '没在说你', '没说你', '别插嘴', '别乱插', '不用艾特', '不用@',
+    '自作多情', '没跟你聊', '不是跟你说话', '没问你', '别回了', '不用回', '别搭话',
+)
 _EXTRA_ROLL = 'dafeiyu_group_wake_random_roll'
 _EXTRA_REASON = 'dafeiyu_group_wake_reason'
 _EXTRA_ENGAGED = 'dafeiyu_group_wake_engaged'
@@ -123,11 +147,17 @@ def _apply_runtime(config) -> None:
             'engaged_max_turns',
             'engaged_cooldown_seconds',
             'engaged_grace_seconds',
+            'engaged_same_sender_seconds',
             'master_reply_probability',
             'master_reply_cooldown_seconds',
             'lively_window_seconds',
             'lively_min_messages',
             'lively_max_boost',
+            'engaged_directed_min_score',
+            'self_share_window_seconds',
+            'self_share_min_messages',
+            'self_share_max_ratio',
+            'retort_silence_minutes',
         ):
             _RUNTIME[key] = _as_float(value, 0.0)
         else:
@@ -136,6 +166,11 @@ def _apply_runtime(config) -> None:
         _RUNTIME['bot_filter'] = list(DEFAULTS['bot_filter'])
     if not _RUNTIME['keywords']:
         _RUNTIME['keywords'] = list(DEFAULTS['keywords'])
+    if silent_guard is not None:
+        try:
+            silent_guard.apply(config)
+        except Exception:
+            pass
 
 
 def _bot_match(umo: str) -> bool:
@@ -198,6 +233,29 @@ def _is_master_event(event) -> bool:
     except Exception:
         sid = ''
     return bool(sid) and sid in _master_ids()
+
+
+def _message_parts(event) -> list:
+    try:
+        return list(event.get_messages() or [])
+    except Exception:
+        return []
+
+
+def _has_image(event) -> bool:
+    """这条消息里有没有图片/表情（图片消息的 message_str 是空的）。"""
+    for comp in _message_parts(event):
+        if type(comp).__name__ == 'Image':
+            return True
+    return False
+
+
+def _quotes_me(event) -> bool:
+    """这条消息是不是「引用回复」——引用别人的消息时，多半就是在接话。"""
+    for comp in _message_parts(event):
+        if type(comp).__name__ == 'Reply':
+            return True
+    return False
 
 
 def _random_roll(event, boost: float = 1.0) -> bool:
@@ -343,8 +401,139 @@ def _lively_snapshot(max_items: int = 5) -> dict[str, Any]:
     }
 
 
+def _mentions_me(text: str) -> bool:
+    """这句话里有没有叫她（名字/外号）。"""
+    try:
+        lowered = (text or '').lower()
+        return any((k in text or k.lower() in lowered) for k in (_RUNTIME.get('keywords') or []))
+    except Exception:
+        return False
+
+
+def _directed_elsewhere(event) -> bool:
+    """这条消息是在 @ 别人 / 引用别人 —— 压根不是在跟她说话。
+
+    实测（2026-10-01~10-25，合工大桀桀厕所 1991 条）：群里 @别人/引用别人的定向发言
+    占 5%，她插进去的几乎都会挨骂（「没跟你说话」「别插嘴」「自作多情」）。
+    """
+    try:
+        text = event.message_str or ''
+    except Exception:
+        text = ''
+    if _mentions_me(text):
+        # 一边 @ 别人一边提她名字的，还是算在说她
+        return False
+    try:
+        parts = _message_parts(event)
+    except Exception:
+        return False
+    for comp in parts:
+        name = type(comp).__name__
+        if name == 'At':
+            qq = ''
+            try:
+                qq = str(getattr(comp, 'qq', '') or '')
+            except Exception:
+                qq = ''
+            if qq and qq != 'all':
+                return True
+        elif name == 'Reply':
+            return True
+    return False
+
+
+def _self_share_ratio(umo: str) -> float:
+    """这个群最近一段时间里，她的话占了多少（0~1）。"""
+    try:
+        window = max(30.0, _as_float(_RUNTIME.get('self_share_window_seconds'), 300.0))
+        now = time.time()
+        mine = [ts for ts in (_MY_REPLIES.get(umo) or []) if now - ts <= window]
+        _MY_REPLIES[umo] = mine
+        total = [ts for ts in (_ACTIVITY.get(umo) or []) if now - ts <= window]
+        if not total:
+            return 0.0
+        return len(mine) / float(len(total))
+    except Exception:
+        return 0.0
+
+
+def _self_share_blocked(umo: str) -> bool:
+    """她在这个群说得太多了就先让一让，别把群聊变成单人播报。"""
+    if not _RUNTIME.get('self_share_enabled', True):
+        return False
+    try:
+        window = max(30.0, _as_float(_RUNTIME.get('self_share_window_seconds'), 300.0))
+        now = time.time()
+        total = len([ts for ts in (_ACTIVITY.get(umo) or []) if now - ts <= window])
+        min_messages = int(_as_float(_RUNTIME.get('self_share_min_messages'), 10))
+        if total < min_messages:
+            return False
+        ratio = _self_share_ratio(umo)
+        max_ratio = _as_float(_RUNTIME.get('self_share_max_ratio'), 0.35)
+        if ratio >= max_ratio:
+            logger.info(
+                '[dafeiyu_group_wake] 她在这个群说得有点多（%.0f%%），先让一让: %s',
+                ratio * 100.0, umo,
+            )
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _retort_silenced(key: str) -> bool:
+    """刚被群友嫌弃过，还在安静期里。"""
+    try:
+        until = _RETORT_UNTIL.get(key)
+        if not until:
+            return False
+        if time.time() >= until:
+            _RETORT_UNTIL.pop(key, None)
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _note_retort(text: str, key: str) -> bool:
+    """群友明说她插嘴就安静几分钟（这条本身也不回）。"""
+    if not _RUNTIME.get('retort_silence_enabled', True):
+        return False
+    try:
+        if not any(word in (text or '') for word in _RETORT_WORDS):
+            return False
+        minutes = _as_float(_RUNTIME.get('retort_silence_minutes'), 10.0)
+        if minutes <= 0:
+            return False
+        _RETORT_UNTIL[key] = time.time() + minutes * 60.0
+        _ENGAGED.pop(key, None)
+        logger.info(
+            '[dafeiyu_group_wake] 群友说「%s」，这个群先安静 %.0f 分钟: %s',
+            (text or '')[:20], minutes, key,
+        )
+        return True
+    except Exception:
+        return False
+
+
+# 这些词太常见，撞字不算「在聊同一件事」（不然「今天吃什么」也会被判成接话）
+_STOP_WORDS = (
+    '今天', '明天', '昨天', '现在', '刚才', '时候', '什么', '怎么', '为什么', '咱们', '你们',
+    '我们', '他们', '她们', '这个', '那个', '就是', '真的', '可以', '还有', '没有', '不是',
+    '觉得', '知道', '一下', '这么', '那么', '因为', '所以', '但是', '已经', '感觉', '东西',
+    '地方', '一下', '一个', '自己', '其实', '反正', '应该', '还是', '可能', '估计', '有点',
+)
+
+
+def _strip_stop_words(text: str) -> str:
+    cleaned = text or ''
+    for word in _STOP_WORDS:
+        cleaned = cleaned.replace(word, ' ')
+    return cleaned
+
+
 def _bigrams(text: str) -> set[str]:
-    cleaned = re.sub(r'[^0-9A-Za-z一-鿿]', '', text or '')
+    cleaned = re.sub(r'[^0-9A-Za-z一-鿿]', '', _strip_stop_words(text))
     if len(cleaned) < 2:
         return set()
     return {cleaned[index:index + 2] for index in range(len(cleaned) - 1)}
@@ -374,23 +563,33 @@ def _interest_related(text: str) -> float:
     return 0.0
 
 
-def _engagement_score(event, text: str, recent_user: list[str]) -> tuple[float, str]:
-    """这条新消息跟她刚才聊的相关度（0~1）和理由。"""
+def _engagement_score(event, text: str, recent_user: list[str], ref: str | None = None) -> tuple[float, str, float]:
+    """这条新消息跟她刚才聊的相关度。
+
+    返回 (分数 0~1, 理由, 硬相关 core)。
+    core 只算「真的在说她 / 在接她的话 / 在聊她刚聊的事」：叫名字、引用她、跟她上一句或有
+    实际内容重合、命中她的兴趣。问句 / 接茬 / 指代这些只是软加分，core 为 0 就当她没被说到，
+    一句都不接（免得群里随便一句问话她都插嘴）。
+    """
     keywords = _RUNTIME.get('keywords') or []
     lowered = (text or '').lower()
     if any((k in text or k.lower() in lowered) for k in keywords):
-        return 1.0, '叫名字'
-    score = 0.0
+        return 1.0, '叫名字', 1.0
+    core = 0.0
+    soft = 0.0
     why: list[str] = []
-    ref = ''
-    try:
-        ref = str(event.get_extra('dafeiyu_group_wake_last_reply') or '')
-    except Exception:
-        ref = ''
+    if ref is None:
+        try:
+            ref = str(event.get_extra('dafeiyu_group_wake_last_reply') or '')
+        except Exception:
+            ref = ''
+    if _quotes_me(event):
+        core += 0.4
+        why.append('引用回复')
     if ref:
         ov = _overlap(text, ref)
         if ov > 0:
-            score += min(0.5, ov * 0.9)
+            core += min(0.5, ov)
             why.append('接话')
     # 跟群里刚才那几句（含别人叫她时说的话）的重合：权重比「接她的话」低一点，
     # 但比原来高，好让「换个说法接着聊同一个话题」也能续上。
@@ -398,23 +597,25 @@ def _engagement_score(event, text: str, recent_user: list[str]) -> tuple[float, 
     if joined:
         ov = _overlap(text, joined)
         if ov > 0:
-            score += min(0.45, ov * 0.9)
+            core += min(0.45, ov)
             why.append('接着聊')
     if _RUNTIME.get('engaged_use_interest', True):
         interest = _interest_related(text)
         if interest > 0:
-            score += min(0.5, interest)
+            core += min(0.5, interest)
             why.append('兴趣')
     if any(q in text for q in _QUESTION_WORDS):
-        score += 0.3
+        soft += 0.3
         why.append('问句')
     if len(text) <= 8 and any(k in text for k in _BACKCHANNEL_WORDS):
-        score += 0.25
+        soft += 0.25
         why.append('接茬')
     if any(k in text for k in _DEICTIC_WORDS):
-        score += 0.2
+        soft += 0.2
         why.append('指代')
-    return min(1.0, score), '+'.join(why)
+    # 软加分只当一点点辅助，不能单靠自己把分数顶过门槛
+    score = min(1.0, core + soft * 0.35)
+    return score, '+'.join(why), core
 
 
 def _engaged_clear(key: str, reason: str) -> None:
@@ -438,6 +639,8 @@ def _engaged_active(event, umo: str) -> bool:
 def _engaged_should_wake(event) -> bool:
     """续聊判定：她刚回过这个群，新消息跟她刚才聊的相关度足够且掷中概率时才接话。"""
     try:
+        if silent_guard is not None and silent_guard.is_silent(event):
+            return False
         if not _RUNTIME.get('engaged_enabled', True):
             return False
         try:
@@ -455,11 +658,21 @@ def _engaged_should_wake(event) -> bool:
         if not _is_group(event, umo):
             return False
         text = (event.message_str or '').strip()
-        if not text or text.startswith('/'):
+        if text.startswith('/'):
             return False
+        image_only = False
+        if not text:
+            if not _has_image(event):
+                return False
+            text = '[图片]'
+            image_only = True
         key = _group_key(event, umo)
         state = _ENGAGED.get(key)
         if not state:
+            return False
+        if _retort_silenced(key):
+            return False
+        if _note_retort(text, key):
             return False
         count = _note_activity(event, umo)
         now = time.time()
@@ -487,9 +700,29 @@ def _engaged_should_wake(event) -> bool:
         last_engaged = _LAST_ENGAGED.get(key)
         if cooldown > 0 and last_engaged is not None and now - last_engaged < cooldown:
             return False
+        try:
+            sid = str(event.get_sender_id() or '')
+        except Exception:
+            sid = ''
+        same_gap = _as_float(_RUNTIME.get('engaged_same_sender_seconds'), 20.0)
+        last_sender = _LAST_ENGAGED_SENDER.get(key)
+        if same_gap > 0 and last_sender and last_sender[0] == sid and now - last_sender[1] < same_gap:
+            # 同一个人刚说过就别连着接，免得她跟一个人来回刷屏
+            return False
         recent_user = [str(item.get('x') or '') for item in (_RECENT_USER.get(umo) or [])[-3:]]
-        score, why = _engagement_score(event, text, recent_user)
+        score, why, core = _engagement_score(event, text, recent_user, str(state.get('last_reply_text') or ''))
+        if image_only:
+            score = min(1.0, score + 0.07)
+            why = (why + '+发图') if why else '发图'
+        if core <= 0:
+            score = 0.0
+            why = (why + '+没在说她') if why else '没在说她'
         min_score = _as_float(_RUNTIME.get('engaged_min_score'), 0.2)
+        if _RUNTIME.get('random_skip_directed', True) and _directed_elsewhere(event):
+            # 别人在 @ 别人 / 引用别人：除非明显在接她的话，否则不插嘴
+            min_score = max(min_score, _as_float(_RUNTIME.get('engaged_directed_min_score'), 0.6))
+        if _self_share_blocked(umo):
+            return False
         if late > 0:
             # 已经出了正常窗口，要求跟刚才的话题更相关才接
             min_score = max(min_score, 0.45)
@@ -509,6 +742,7 @@ def _engaged_should_wake(event) -> bool:
         if late > 0:
             logger.info('[dafeiyu_group_wake] 续聊刚过期 %.0f 秒，这条还挺相关（%.2f），再跟一句: %s', late, score, key)
         _LAST_ENGAGED[key] = now
+        _LAST_ENGAGED_SENDER[key] = (sid, now)
         state['last_msg_at'] = now
         state['recent_user'] = recent_user[-2:] + [text[:120]]
         try:
@@ -527,6 +761,8 @@ def _engaged_should_wake(event) -> bool:
 def _should_wake(event) -> bool:
     """判断这条群消息要不要唤醒大肥鱼（关键词命中，或随机搭话命中）。"""
     try:
+        if silent_guard is not None and silent_guard.is_silent(event):
+            return False
         if not _RUNTIME.get('enabled', True):
             return False
         umo = getattr(event, 'unified_msg_origin', '') or ''
@@ -539,6 +775,16 @@ def _should_wake(event) -> bool:
         except Exception:
             text = ''
         if not text:
+            # 图片/表情消息的 message_str 是空的：主人发的图也要接（不然截图问他她永远不说话）。
+            if _has_image(event) and _is_master_event(event) and _RUNTIME.get('master_reply_enabled', True):
+                text = '[图片]'
+            else:
+                return False
+        key = _group_key(event, umo)
+        if _retort_silenced(key):
+            logger.debug('[dafeiyu_group_wake] 还在被嫌弃的安静期里，不回: %s', key)
+            return False
+        if _note_retort(text, key):
             return False
         _note_activity(event, umo)
         lowered = text.lower()
@@ -578,6 +824,12 @@ def _should_wake(event) -> bool:
         if _engaged_active(event, umo):
             # 刚回过这个群、还在盯后续：随机搭话先别抢，交给续聊判断决定要不要接。
             return False
+        if _RUNTIME.get('random_skip_directed', True) and _directed_elsewhere(event):
+            # 在 @ 别人 / 引用别人：这不是在聊天，插进去就是自作多情
+            logger.debug('[dafeiyu_group_wake] 这条是在跟别人说话，不插嘴: %s', _group_key(event, umo))
+            return False
+        if _self_share_blocked(umo):
+            return False
         if _random_reply_should_wake(event, text, umo):
             try:
                 event.set_extra(_EXTRA_REASON, 'random')
@@ -611,6 +863,10 @@ def _record_my_reply(event, reply_text: str = '') -> None:
         text = text.replace('\n', ' ').strip()[:200]
         key = _group_key(event, umo)
         now = time.time()
+        mine = _MY_REPLIES.setdefault(umo, [])
+        mine.append(now)
+        while mine and now - mine[0] > 3600:
+            mine.pop(0)
         window = _as_float(_RUNTIME.get('engaged_window_seconds'), 180.0)
         state = _ENGAGED.get(key) or {}
         fresh = bool(state) and (now - _as_float(state.get('last_reply_at'), 0.0)) <= window

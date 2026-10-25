@@ -37,7 +37,7 @@ from astrbot.core.platform.astr_message_event import MessageSesion
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 PLUGIN_ID = "astrbot_plugin_dafeiyu_core"
-VERSION = "2.3.0"
+VERSION = "2.3.2"
 REPO = "https://github.com/acceleratorcxy/astrbot_plugin_dafeiyu_core"
 
 _DATA_ROOT = Path(get_astrbot_plugin_data_path())

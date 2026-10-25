@@ -31,6 +31,11 @@ from astrbot.core.agent.message import TextPart
 from astrbot.core.message.components import Image
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
+try:  # 协议端内置命令静默词表（例如 aiocqhttp 的 #sl）：这类消息不该进群聊发言记录
+    from . import silent_guard
+except Exception:
+    silent_guard = None
+
 PLUGIN_ID = 'astrbot_plugin_dafeiyu_core'
 TZ = timezone(timedelta(hours=8))
 
@@ -246,6 +251,8 @@ def record(event: AstrMessageEvent, text: str | None = None) -> None:
     """记录一条发言（同一条消息在 30 秒内只记一次）。"""
     try:
         if not _RUNTIME.get('enabled', True):
+            return
+        if silent_guard is not None and silent_guard.is_silent(event):
             return
         umo = getattr(event, 'unified_msg_origin', '') or ''
         if not umo or not _bot_match(umo):

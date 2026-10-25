@@ -110,9 +110,9 @@
         "default": 80
       },
       "engaged_min_score": {
-        "description": "续聊相关度门槛（0~1，越高越难触发）",
+        "description": "续聊相关度门槛（0~1，越高越难触发；只有真的在说她/接她的话才会过）",
         "type": "float",
-        "default": 0.2
+        "default": 0.3
       },
       "engaged_window_seconds": {
         "description": "续聊盯多久（秒，超时就不管这个群了）",
@@ -132,7 +132,12 @@
       "engaged_cooldown_seconds": {
         "description": "续聊两条之间最少隔几秒",
         "type": "int",
-        "default": 10
+        "default": 12
+      },
+      "engaged_same_sender_seconds": {
+        "description": "同一个人刚说完，多少秒内不连着再接（防跟她一个人来回刷屏）",
+        "type": "int",
+        "default": 20
       },
       "engaged_use_interest": {
         "description": "续聊时也算上她的兴趣相关度",
@@ -157,7 +162,7 @@
       "lively_max_boost": {
         "description": "热闹时主动回话概率最多翻几倍",
         "type": "float",
-        "default": 3.0
+        "default": 3
       },
       "master_reply_enabled": {
         "description": "主人在群里说话时优先接话（不用叫名字）",
@@ -165,19 +170,80 @@
         "default": true
       },
       "master_reply_probability": {
-        "description": "主人群聊发言的接话概率（%，会再乘热闹加成）",
+        "description": "主人群聊发言的接话概率（%，会再乘热闹加成；100=必接）",
         "type": "float",
-        "default": 85
+        "default": 100
       },
       "master_reply_cooldown_seconds": {
         "description": "主人连续发言的最小间隔（秒，防刷屏）",
         "type": "int",
-        "default": 20
+        "default": 6
+      },
+      "silent_prefixes": {
+        "description": "协议端命令静默前缀（命中就不唤醒、不回复，避免 #sl 这类协议端命令漏到群里）",
+        "type": "list",
+        "default": [
+          "#sl",
+          "#napcat",
+          "#status",
+          "#version",
+          "#nb"
+        ]
+      },
+      "silent_hash_message": {
+        "description": "以 # 开头的短消息一律不回（挡协议的其它命令）",
+        "type": "bool",
+        "default": true
+      },
+      "silent_hash_max_chars": {
+        "description": "上面那条的长度上限（字）",
+        "type": "int",
+        "default": 24
       },
       "engaged_grace_seconds": {
         "description": "续聊窗口过了多久之内还允许补一句（秒；要给话题留点余量，治她慢半拍）",
         "type": "int",
         "default": 90
+      },
+      "random_skip_directed": {
+        "description": "别人 @别人 / 引用别人 时不插嘴（只在真跟她说话或明确接她话时才回）",
+        "type": "bool",
+        "default": true
+      },
+      "engaged_directed_min_score": {
+        "description": "别人 @别人/引用别人 时，续聊要求的相关度（0~1，越高越难插嘴）",
+        "type": "float",
+        "default": 0.6
+      },
+      "self_share_enabled": {
+        "description": "自动让麦：她在一个群里说话占比太高时先不开口",
+        "type": "bool",
+        "default": true
+      },
+      "self_share_window_seconds": {
+        "description": "算说话占比的时间窗口（秒）",
+        "type": "int",
+        "default": 300
+      },
+      "self_share_min_messages": {
+        "description": "窗口里消息少于这么多条就不算占比（避免小群里误判）",
+        "type": "int",
+        "default": 10
+      },
+      "self_share_max_ratio": {
+        "description": "她在窗口里的发言占比超过这个值就先不说话（0~1）",
+        "type": "float",
+        "default": 0.35
+      },
+      "retort_silence_enabled": {
+        "description": "被群里说「没跟你说话/别插嘴/自作多情」后自动安静一会儿",
+        "type": "bool",
+        "default": true
+      },
+      "retort_silence_minutes": {
+        "description": "被嫌弃后安静多少分钟（这个群）",
+        "type": "int",
+        "default": 10
       }
     }
   },
@@ -673,7 +739,7 @@
       "peak_input_price": {
         "description": "峰时输入价格（元 / 百万 token，缓存未命中）",
         "type": "float",
-        "default": 2.0
+        "default": 2
       },
       "peak_cached_input_price": {
         "description": "峰时输入价格（元 / 百万 token，缓存命中）",
@@ -683,12 +749,12 @@
       "peak_output_price": {
         "description": "峰时输出价格（元 / 百万 token）",
         "type": "float",
-        "default": 8.0
+        "default": 8
       },
       "offpeak_input_price": {
         "description": "空闲时段输入价格（元 / 百万 token，缓存未命中）",
         "type": "float",
-        "default": 1.0
+        "default": 1
       },
       "offpeak_cached_input_price": {
         "description": "空闲时段输入价格（元 / 百万 token，缓存命中）",
@@ -698,7 +764,7 @@
       "offpeak_output_price": {
         "description": "空闲时段输出价格（元 / 百万 token）",
         "type": "float",
-        "default": 4.0
+        "default": 4
       },
       "peak_ranges": {
         "description": "高峰时段（北京时间，逗号分隔；工作日 9:00-12:00、14:00-18:00）",

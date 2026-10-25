@@ -124,6 +124,32 @@
 - 群里热闹加成：`lively_window_seconds`（120 秒）内消息数超过 `lively_min_messages`（6）条后，随机搭话/续聊/兴趣接话的概率乘 `1+(超出数/门槛)`，最多乘 `lively_max_boost`（3 倍）；`lively_boost_enabled` 可关。
 - 坑：续聊不能用 `event.is_wake` 判断（别的插件 filter 通过也会置 True），只看 `is_at_or_wake_command` 和真唤醒 extra 标记。
 
+## 社交分寸（治「自作多情」）
+
+群里不是在跟她说话时别插嘴，说多了自动让一让，被群友明说「没跟你说话 / 别插嘴 / 自作多情」就安静一阵子。
+
+| 配置（「配置 → 群聊唤醒」） | 默认 | 作用 |
+| --- | --- | --- |
+| random_skip_directed | true | 有 @别人 或引用回复、又没提她名字的消息，不触发随机搭话 |
+| engaged_directed_min_score | 0.6 | 上面这类消息走续聊时要求的相关度 |
+| self_share_enabled | true | 她在群里发言占比过高时先不开口 |
+| self_share_window_seconds | 300 | 算占比的时间窗口 |
+| self_share_min_messages | 10 | 窗口内消息太少就不算占比 |
+| self_share_max_ratio | 0.35 | 占比超过这个值就自动让麦 |
+| retort_silence_enabled | true | 被嫌弃后这个群安静一会儿 |
+| retort_silence_minutes | 10 | 安静多少分钟 |
+
+数据依据：真实群 1991 条里她占 6.6%，别人真正冲她来的只有 5.5%，但她 132 次回复里有 28.8% 是插进别人对话；另 23 个真实群 10.4 万条里 @别人/引用别人的定向发言占 7.7%。详见补充文档 20.36。
+
+## 协议端命令静默词表（silent_guard）
+
+群里出现协议端自带的命令（aiocqhttp 的 #sl、NapCat 的 #napcat 之类）时，一律当没看见：不唤醒、不回复，也不写进群聊发言记录（否则模型会追问「刚才那条 #sl 是什么意思」）。
+
+- silent_prefixes：命中前缀，不区分大小写，默认 #sl / #napcat / #status / #version / #nb；
+- silent_hash_message：以 # 或 ＃ 开头的短消息一律不回（默认开），长度上限 silent_hash_max_chars（默认 24 字）。
+
+三项都在「配置 → 群聊唤醒」里。只对群聊生效；私聊里发这些仍会被正常回一句。
+
 ## 群聊发言记录（speaker 段）
 
 - 群聊里每条消息都会记一笔：昵称、发送者 id 后 6 位、是不是主人、内容（截 40 字）、时间；同人同文 30 秒去重。记录存 `plugin_data/astrbot_plugin_dafeiyu_core/speaker_log.json`。

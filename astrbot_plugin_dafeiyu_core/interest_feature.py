@@ -41,6 +41,11 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.event.filter import CustomFilter
 from astrbot.api.star import Context, Star, register
 from astrbot.core.agent.message import TextPart
+
+try:  # 协议端内置命令静默词表（例如 aiocqhttp 的 #sl），加载失败不影响主流程
+    from . import silent_guard
+except Exception:
+    silent_guard = None
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 PLUGIN_ID = 'astrbot_plugin_dafeiyu_interest'
 DEFAULTS = {'enabled': True, 'bot_filter': [], 'wake_enabled': True, 'wake_probability': 55, 'wake_threshold': 0.45, 'wake_cooldown_seconds': 180, 'wake_related_enabled': True, 'wake_related_probability': 35, 'wake_related_min_score': 0.35, 'master_wake_boost': 1.6, 'master_wake_threshold_scale': 0.7, 'only_group': True, 'hints_enabled': True, 'hints_max_items': 3, 'hints_max_notes': 2, 'auto_search_enabled': True, 'auto_search_min_affinity': 0.7, 'auto_search_cooldown_seconds': 1800, 'auto_search_max_per_day': 6, 'auto_search_top_k': 3, 'max_notes_per_interest': 8, 'candidate_ttl_days': 3, 'promote_mentions': 3, 'interest_ttl_days': 7, 'prune_enabled': True, 'prune_interval_seconds': 3600, 'affinity_decay_per_day': 0.02}
@@ -887,6 +892,11 @@ class InterestWakeFilter(CustomFilter):
     """群聊里聊到她感兴趣的话题时，按概率唤醒回复。"""
 
     def filter(self, event: AstrMessageEvent, cfg: AstrBotConfig) -> bool:
+        try:
+            if silent_guard is not None and silent_guard.is_silent(event):
+                return False
+        except Exception:
+            pass
         return _interest_should_wake(event)
 
 class InterestFeature:
