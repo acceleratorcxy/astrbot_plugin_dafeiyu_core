@@ -708,12 +708,12 @@ def _build_hint_block(matched: list[dict[str, Any]], related: bool=False) -> str
     if matched:
         items = matched[:max(1, max_items)]
         if related:
-            header = '【大肥鱼的私人兴趣备忘】（只影响语气，别照念）这条消息可能跟她惦记的事有关：' + '、'.join((i['name'] for i in matched[:3]))
+            header = '【兴趣备忘】（只影响语气，别照念）这条消息可能跟她惦记的事有关：' + '、'.join((i['name'] for i in matched[:3]))
         else:
-            header = '【大肥鱼的私人兴趣备忘】（只影响语气，别照念）这次聊到了：' + '、'.join((i['name'] for i in matched[:3]))
+            header = '【兴趣备忘】（只影响语气，别照念）这次聊到了：' + '、'.join((i['name'] for i in matched[:3]))
     else:
         items = _STORE.top(max(1, max_items))
-        header = '【大肥鱼的私人兴趣备忘】（只影响语气，别照念）最近惦记：'
+        header = '【兴趣备忘】（只影响语气，别照念）最近惦记：'
     lines = []
     for item in items:
         notes = _format_notes(item, max_notes)
@@ -974,7 +974,7 @@ class InterestFeature:
             ok = False
         if ok:
             return ''
-        return '（这是本鲸和主人的小本本，别人碰不了。想聊这个就直接聊天。）'
+        return '（这是我和主人的小本本，别人碰不了。想聊这个就直接聊天。）'
 
     @llm_tool(name='interest_list')
     async def interest_list(self, event: AstrMessageEvent) -> str:
@@ -992,7 +992,7 @@ class InterestFeature:
             rows.append(f'{item['name']}（喜欢 {item.get('affinity', 0):.2f}，被提到 {item.get('mention_count', 0)} 次，记录 {len(item.get('notes') or [])} 条）')
         if not rows:
             return '暂时没有记录兴趣。'
-        text = '本鲸的兴趣：' + '；'.join(rows[:20])
+        text = '我的兴趣：' + '；'.join(rows[:20])
         cands = _STORE.candidates()[:3]
         if cands:
             text += '\n还在观察的临时话题（聊得多才算兴趣）：' + '、'.join(f"{c['name']}({c.get('mentions', 0)}次)" for c in cands)
@@ -1012,7 +1012,7 @@ class InterestFeature:
         if _STORE is None:
             return '兴趣库还没准备好。'
         item = _STORE.add(name, aliases, 0.7, pinned=True, kind='master')
-        return f'记下了，本鲸对「{item['name']}」感兴趣了（喜欢程度 {item['affinity']:.2f}）。'
+        return f'记下了，我对「{item['name']}」感兴趣了（喜欢程度 {item['affinity']:.2f}）。'
 
     @llm_tool(name='interest_remove')
     async def interest_remove(self, event: AstrMessageEvent, name: str) -> str:
@@ -1055,7 +1055,7 @@ class InterestFeature:
             # 只是临时话题：先记在观察区，聊得多才会升级成正式兴趣
             _STORE.remember_candidate(topic, source='search')
             _STORE.bump_search()
-            return f'搜到 {len(results)} 条。「{topic}」先当临时话题记着（还没算本鲸的兴趣），聊得多了再收进兴趣库：{summary}'
+            return f'搜到 {len(results)} 条。「{topic}」先当临时话题记着（还没算我的兴趣），聊得多了再收进兴趣库：{summary}'
         added = 0
         for result in results[:2]:
             if _STORE.add_note(item, _note_text(result), result.get('title', ''), result.get('url', ''), 'tool'):
@@ -1140,7 +1140,7 @@ class InterestFeature:
                 name = pieces[0]
                 aliases = pieces[1] if len(pieces) > 1 else ''
                 item = _STORE.add(name, aliases, 0.7, pinned=True, kind='master')
-                yield event.plain_result(f'记下了，本鲸对「{item['name']}」感兴趣（这个会一直留着）。')
+                yield event.plain_result(f'记下了，我对「{item['name']}」感兴趣（这个会一直留着）。')
                 return
             if action in ('删', '删除'):
                 if not self._is_master(event):
@@ -1155,7 +1155,7 @@ class InterestFeature:
                 return
             if action in ('搜', '搜索'):
                 if not self._is_master(event):
-                    yield event.plain_result('只有主人能让本鲸去搜。')
+                    yield event.plain_result('只有主人能让我去搜。')
                     return
                 topic = rest.strip()
                 if not topic:
@@ -1166,7 +1166,7 @@ class InterestFeature:
                 return
             if action in ('记', '记录'):
                 if not self._is_master(event):
-                    yield event.plain_result('只有主人能让本鲸记。')
+                    yield event.plain_result('只有主人能让我记。')
                     return
                 pieces = rest.split(maxsplit=1)
                 if len(pieces) < 2:
@@ -1206,9 +1206,9 @@ class InterestFeature:
             return '兴趣库还没准备好。'
         items = _STORE.top(8)
         if not items:
-            return '本鲸现在没什么特别的兴趣。'
+            return '我现在没什么特别的兴趣。'
         rows = [f'{i['name']}({i.get('affinity', 0):.2f})' for i in items]
-        text = '本鲸最近惦记：' + '、'.join(rows)
+        text = '我最近惦记：' + '、'.join(rows)
         cands = _STORE.candidates()[:4]
         if cands:
             text += '\n还在观察：' + '、'.join(f"{c['name']}({c.get('mentions', 0)}次)" for c in cands)

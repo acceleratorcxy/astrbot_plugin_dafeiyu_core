@@ -258,7 +258,7 @@ async def _material(plugin: Any, umo: str, limit: int) -> tuple[str, int]:
                 if not text:
                     continue
                 if role == 'assistant':
-                    text = '鲸鲸：' + text
+                    text = '助手：' + text
                 elif role == 'user':
                     text = '群友：' + text
                 key = text[-80:]

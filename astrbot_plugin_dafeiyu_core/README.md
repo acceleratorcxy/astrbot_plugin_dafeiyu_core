@@ -114,7 +114,7 @@
 
 - 内置 LLM 工具 `send_meme(mood)`：想配图、被要图时直接往当前会话发一张表情包（只读 meme_manager 的图包，不改它配置）。
 - 按心情词匹配当前默认图包的分类，分类内随机取图；同一会话避免连发同一张；`meme.max_per_hour`（默认 20）限流。
-- 人格 prompt 里已声明「想要表情 / 主人要图就调 send_meme」「不要说自己发不了图」「一次最多一张、别每条都发」。
+- 发不发图由模型自己决定：插件只提供工具和限流，不在人格里写任何要求；想固定发图风格，就在你自己的人格设定里写。
 - 兄弟模块里的 `@llm_tool` 需要 `main.py` 的 `_normalize_llm_tools()` 手动 `functools.partial` 绑定，否则会报 `missing 1 required positional argument: 'event'`；重载日志应有「已把 9 个 LLM 工具绑定到主模块」。
 
 ## 群聊续聊 / 热闹加成（group_wake 段）
@@ -194,9 +194,10 @@
 - 配置（`sleep` 段，21 项）：`enabled` / `bot_filter` / `quiet_hour`(1) / `sleep_hour`(2) / `wake_hour`(6) / `wake_jitter_minutes`(45) / `goodnight_keywords` / `goodnight_reply`(安) / `wake_keywords` / `other_goodnight_reply` / `wake_other_private` / `catchup_enabled` / `catchup_max_groups`(8) / `catchup_max_messages`(30) / `catchup_interest_score`(0.2) / `morning_report` / `notify_on_auto_sleep` / `max_pending_per_umo`(20) / `max_group_buffer`(40) / `check_interval_seconds`(30) / `reply_style`。
 - 回滚：关 `sleep.enabled`（或先 `/睡眠 醒`），拦截与巡检立刻停。
 
-## 名字与人设
+## 人格
 
-- 人格名是「鲸鲸」，大肥鱼只是外号；偏傲娇：嘴上不承认在意、被夸先哼一声再偷偷高兴、被关心就嘴硬，但不贱兮兮、不阴阳怪气、不顶着人说话。对主人（owner 段 `master_ids` / 运行时标注）有偏爱但嘴硬，对其他人不用这种软语气。
+- 本项目**不规定、也不限制人格**：性格、语气、称呼、口头禅全部由你在 AstrBot「人格设定」里写的那份 prompt 决定，插件不写死任何人设文本，也不会因为插件而改你的性格。
+- 插件只做两件跟人格有关的事：① 读取当前人格做备份 / 恢复（`/备份`、`/压缩` 后复原）；② 在每轮请求里补「谁是主人、该听谁的话、别泄露主人隐私」这类身份与权限规则（`owner` 段可整体关掉）。语气怎么说话，插件一句都不管。
 
 ## 隐私：敏感信息只私聊主人
 

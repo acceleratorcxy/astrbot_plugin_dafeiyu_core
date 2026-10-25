@@ -38,6 +38,11 @@
         "type": "bool",
         "default": true
       },
+      "short_reply_hint": {
+        "description": "主人只回「是/对/嗯/不是」这类一两个字时，点明他在回答你上一句（防止她理解成没听懂、反问「到底想干嘛」）",
+        "type": "bool",
+        "default": true
+      },
       "rule_override": {
         "description": "自定义听令规则（留空用内置）",
         "type": "text",

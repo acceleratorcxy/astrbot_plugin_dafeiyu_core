@@ -402,7 +402,7 @@ class ContextGuard:
     ) -> str:
         lines = []
         for msg in old_messages:
-            role = "用户" if str((msg or {}).get("role")) == "user" else "大肥鱼"
+            role = "用户" if str((msg or {}).get("role")) == "user" else "助手"
             text = _text_of_content((msg or {}).get("content")).strip()
             if not text:
                 continue
@@ -422,9 +422,9 @@ class ContextGuard:
         instruction = str(self.cfg.get("compress_instruction") or "").strip()
         if not instruction:
             instruction = (
-                "你在帮一个叫大肥鱼的聊天人格做长期记忆整理。请把下面这段聊天压缩成"
+                "你在帮一个聊天人格做长期记忆整理。请把下面这段聊天压缩成"
                 "不超过 300 字的记忆摘要：保留人物关系、发生过的事、用户的偏好和约定、"
-                "大肥鱼答应过的事、重要的情绪与梗；删掉寒暄和重复内容。用第三人称陈述，"
+                "TA 答应过的事、重要的情绪与梗；删掉寒暄和重复内容。用第三人称陈述，"
                 "不要写成给用户看的回复，直接输出摘要正文。"
             )
         prev_block = ""
