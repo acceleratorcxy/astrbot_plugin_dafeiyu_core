@@ -1,115 +1,122 @@
-# 大肥鱼人格核心（astrbot_plugin_dafeiyu_core）
+# 大肥鱼人格核心（AstrBot 插件）
 
-一个把「人格机器人」做完整的 AstrBot 插件：主人识别、兴趣机制、群聊唤醒与续聊、人味化输出、联网搜索、睡眠模式、上下文压缩、全量备份、费用统计，全部收在一个插件、一套配置、一个页面里。
+![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16%2C%20%3C5-4B8BBE)
+![version](https://img.shields.io/badge/version-2.2.0-blue)
+![license](https://img.shields.io/badge/license-MIT-green)
+![python](https://img.shields.io/badge/python-3.10%2B-yellow)
 
-原本是四个独立插件（owner / group_wake / humanizer / interest）拼起来的，现在合并成一个包，配置和查看统一到插件详情页的「View」标签。
+把「人格机器人」做完整的一套 AstrBot 插件：**主人识别、兴趣机制、群聊唤醒与续聊、人味化输出、联网搜索、睡眠模式、上下文压缩、全量资料备份、费用统计**——全部收在一个插件、一套配置、一个页面里。
 
-> 这里只讲怎么用；命令、配置项全表、页面说明、常见问题在 [`docs/使用手册.md`](docs/使用手册.md)。
+原本是四个独立插件（owner / group_wake / humanizer / interest）拼起来的，后来合并成一个包，配置和查看统一到插件详情页的「View」标签。
 
-## 功能总览
+## 目录结构
+
+```
+.
+├── astrbot_plugin_dafeiyu_core/     # 插件本体（安装时复制这个目录）
+│   ├── main.py                      # 入口：命令、权限门、汇报、子模块装配
+│   ├── _conf_schema.json            # 13 段配置定义（页面「配置」tab 由它生成）
+│   ├── metadata.yaml                # 插件元信息（AstrBot 识别用）
+│   ├── owner_feature.py             # 主人身份与听令规则
+│   ├── group_wake_feature.py        # 群聊唤醒 / 随机搭话 / 续聊 / 热闹加成
+│   ├── humanizer_feature.py         # 人味化输出、配图频率
+│   ├── interest_feature.py          # 兴趣机制（观察中 → 兴趣 → 自动清理）
+│   ├── meme_feature.py              # 主动发表情包（接 meme_manager 图包）
+│   ├── search_feature.py            # 联网搜索（DeepSeek Search/Fetch + 百度兜底）
+│   ├── speaker_feature.py           # 群聊发言记录、按需补上下文、主人没头没尾
+│   ├── cost_feature.py              # 按会话算钱（支持峰谷价）
+│   ├── sleep_feature.py             # 睡眠模式（安静期 / 睡眠期 / 早上补回）
+│   ├── core_context.py              # 上下文守护：提醒、压缩、群聊自动压缩、每会话报告
+│   ├── core_backup.py               # 全量资料备份 / 恢复 + 每晚整理报告
+│   ├── core_page.py                 # 插件页面后端接口
+│   ├── report_feature.py            # 汇报投递（官方机器人 + markdown 表格）
+│   ├── README.md                    # 插件说明（开发者向：模块、配置、坑）
+│   └── views/panel/index.html       # 插件页面（总览/命令/兴趣/备份/配置/上下文）
+├── docs/
+│   └── 使用手册.md                   # 给使用者的手册：命令、页面、13 段配置全表、FAQ、回滚
+├── CHANGELOG.md
+├── LICENSE
+└── README.md                        # 本文件
+```
+
+> 插件放在子目录里，方便和文档、开发资料一起管理。**安装时复制的是 `astrbot_plugin_dafeiyu_core/` 目录**，不是仓库根目录。
+
+## 功能
 
 | 模块 | 做什么 |
-| --- | --- |
-| owner | 主人身份识别、固定听令规则、每次请求标注「谁在说话」 |
-| group_wake | 群聊关键词唤醒、随机搭话、回完一句后继续接话（续聊）、群里热闹时提高主动回复概率 |
-| humanizer | 人味化输出：拆段、去 Markdown/旁白/AI 腔、限制配图概率与频率 |
-| interest | 兴趣库：短期观察 → 聊得多升级 → 久不聊自动清理；倾向性接话；6 个 LLM 工具 + `/兴趣` 命令 |
-| search | 联网搜索：DeepSeek 官方 Search / Fetch，可用百度 AI 搜索兜底；`web_search` / `web_fetch` 工具 |
-| meme | 主动发表情包工具 `send_meme`（只读 meme_manager 的图包，不改它的配置） |
-| speaker | 群聊发言记录；按需补上下文（话能看懂就不读记录）；主人话没头没尾时补别人在聊什么 |
-| cost | 费用统计：按会话累计 token 花费，可选峰谷计价；页面 / 报告 / 命令三处展示 |
-| sleep | 睡眠模式：夜里只记不回、早上随机醒来补回、晚安只回一个「安」、主人可强制叫醒 |
-| backup | 全量资料备份与恢复：人格 / 配置档案 / 兴趣 / 会话历史 / 发言记录 / 压缩状态… |
-| context_guard | 私聊快满提醒 + `/压缩`；群聊自动压缩；每会话上下文用量报告 |
-| page | 统一页面：总览 / 命令 / 兴趣 / 备份 / 配置 / 上下文 六个 tab |
-
-## 环境要求
-
-- AstrBot `>= 4.16, < 5`（插件页面功能需要 AstrBot 的 Plugin View 支持）
-- 可选：`meme_manager` 插件（发表情包功能需要；不装不影响其它功能）
-- 可选：DeepSeek / 百度 AI 搜索的 key（联网搜索需要；没有就自动跳过搜索）
+|---|---|
+| 主人识别 | 认主人、认听令范围，别人下的指令不乱听；每轮标注说话人身份 |
+| 群聊唤醒 | 关键词唤醒、随机搭话、被叫到才回、续聊、群里热闹时提高主动概率 |
+| 人味化 | 去 AI 口吻、拆句、控制配图频率，说话更像真人 |
+| 兴趣机制 | 兴趣库 + 临时话题观察：聊得多才升级成兴趣，久不聊自动清理；人设与主人相关兴趣固定 |
+| 联网搜索 | 不知道的实时信息自己查（DeepSeek 官方 Search/Fetch，百度兜底） |
+| 表情包 | 接 meme_manager 图包，按语境主动发表情包 |
+| 发言记录 | 记住群里最近谁说了什么，答复时能分清人和上下文 |
+| 费用 | 按会话统计 token 与费用，支持峰谷计价 |
+| 睡眠模式 | 1 点后只记不回、2 点后连主人消息也排队、早上 6 点后随机醒来补回 |
+| 上下文 | 私聊快满提醒 → 确认后压缩；群聊按余量/静默/每日自动压缩；压缩后可复原人格资料 |
+| 备份 | 每晚睡眠时间全量备份（人格/兴趣/会话/发言记录/压缩状态/表情包清单），只留最新 3 份 |
+| 汇报 | 每晚 + `/报告` 生成 markdown 表格汇报，走指定机器人发主人私聊 |
+| 页面 | 6 个标签页：总览、命令、兴趣、备份、配置、上下文 |
 
 ## 安装
 
-1. 把整个目录放到 AstrBot 的 `data/plugins/astrbot_plugin_dafeiyu_core/`。
-2. 文件权限 644、目录 `a+rX`，删掉 `__pycache__`（如果在 Linux 上部署）。
-3. 打开 AstrBot WebUI → 插件 → 重载插件。
-4. 插件详情页点「View」进入配置页面，先填两样东西：
-   - 「主人身份与听令」→ `master_ids`：你的 QQ 号 / openid / 用户名（多个用列表）
-   - 各段的 `bot_filter`：填要用这个插件的机器人平台 id（留空 = 所有机器人都生效）
+1. 把本仓库的 `astrbot_plugin_dafeiyu_core/` 整个目录复制到 AstrBot 的插件目录：
 
-## 命令
+```
+   data/plugins/astrbot_plugin_dafeiyu_core/
+```
 
-指令默认只认主人，且只在配置的机器人上生效（`notify.command_platforms`）。群里发指令只会私聊回主人，不会在群里刷屏。
+2. 修权限（AstrBot 在容器里跑时常见）：
+
+```bash
+   chmod -R a+rX data/plugins/astrbot_plugin_dafeiyu_core
+   rm -rf data/plugins/astrbot_plugin_dafeiyu_core/__pycache__
+```
+
+3. 在 AstrBot 面板重载插件（或重启 AstrBot）。
+
+4. 打开插件详情页的 **View**，按提示填：
+   - 「主人身份」：`master_ids`（你的 QQ 号 / openid / 用户名）、`master_name`
+   - 各功能段的 `bot_filter`：哪些机器人（umo 前缀）生效
+   - 其余按需开关，保存后立即生效。
+
+## 常用命令
 
 | 命令 | 说明 |
-| --- | --- |
-| `/help` `/命令` `/帮助` | 命令表。支持 markdown 的机器人发表格版，其它聊天发纯文本版 |
-| `/触发 <动作>` `/trig` | 在私聊里一键干活：报告 / 备份 / 压缩 / 上下文 / 费用 / 兴趣 / 搜索 / 发图 / 群压缩 / 续聊 |
-| `/主人` | 确认当前说话人是不是主人 |
-| `/兴趣` | 列表；`/兴趣 加/删/搜/记/看 …`（写操作仅主人） |
-| `/上下文` | 当前会话上下文用量；`/上下文 全部` 列出每个对话 |
-| `/压缩` | 主人确认后压缩当前会话历史，并从最新备份恢复人格资料 |
-| `/费用 [N]` | 费用账单（累计 / 今日 / 本月 + 每个会话明细） |
-| `/报告` | 整理报告：备份 / 资料 / 夜里 / 每个对话的上下文 / 费用 |
-| `/备份` | `现在` / `列表` / `恢复 <文件名>` / `删除 <文件名>` |
-| `/睡眠` | 看状态；`/睡眠 睡` 手动入睡；`/睡眠 醒` 强制叫醒 |
+|---|---|
+| `/help` `/命令` `/帮助` | 命令清单（markdown 表格版 / 纯文本版自动切换） |
+| `/触发 <动作>` | 让机器人执行动作：报告 / 压缩 / 上下文 / 费用 / 备份 / 兴趣 / 搜索 / 发图 / 群压缩 / 续聊 |
+| `/主人` | 看当前会话的说话人身份 |
+| `/兴趣 看|加|删|搜|记` | 兴趣库管理 |
+| `/上下文` `/上下文 全部` | 当前会话 / 每个会话的上下文用量 |
+| `/压缩` | 压缩当前会话上下文 |
+| `/报告` `/费用 [N]` | 整理报告 / 费用账单 |
+| `/备份 现在|列表|恢复|删除` | 全量资料备份管理 |
+| `/睡眠` `/睡眠 睡|醒` | 睡眠状态 / 手动睡下 / 叫醒 |
 
-## LLM 工具
+> 指令默认只认主人，并且默认只在配置里指定的机器人上生效（私聊/群聊可分别开关）。
 
-`interest_list`、`interest_add`、`interest_remove`、`interest_search`、`interest_remember`、`interest_recall`、`send_meme`、`web_search`、`web_fetch`
+## 文档
 
-需要在人格的「工具」里勾选才会生效（人格的 tools 为空列表时，一个插件工具都用不了）。写操作默认只给主人，搜索和发图不受限。
+- 使用手册：[docs/使用手册.md](docs/使用手册.md)（命令、页面、13 段配置全表、FAQ、一键回滚）
+- 插件说明：[astrbot_plugin_dafeiyu_core/README.md](astrbot_plugin_dafeiyu_core/README.md)（模块结构、LLM 工具、配置项、开发坑）
+- 更新记录：[CHANGELOG.md](CHANGELOG.md)
 
-## 配置页面
+## 环境要求
 
-插件详情页 → View → 六个 tab：
+- AstrBot `>= 4.16, < 5`（开发验证于 4.29.0）
+- Python 3.10+
+- 可选依赖：
+  - **meme_manager** 插件（AstrBot 插件市场可搜）：想要主动发表情包/配图时安装，并准备图包
+  - DeepSeek API Key 或百度 AI 搜索 Key：想要联网搜索时配置（也可用 AstrBot 内置搜索）
+  - QQ 官方机器人（支持 markdown 汇报）或 OneBot / aiocqhttp（个人号）
 
-| tab | 内容 |
-| --- | --- |
-| 总览 | 人格 / 档案 / 兴趣 / 备份数量、指令入口、睡眠状态 |
-| 命令 | 怎么设置权限、怎么调用命令、`/触发` 有哪些动作 |
-| 兴趣 | 兴趣库、还在观察的候选（可收进兴趣 / 忘掉）、记录改删 |
-| 备份 | 立即备份 / 下载 / 导入 / 恢复 / 删除 |
-| 配置 | 13 段配置的表单，保存后热重载生效 |
-| 上下文 | 每个对话的余量、已压缩记忆、群聊自动压缩状态、睡眠模式、费用 |
+## 数据与隐私
 
-配置一共 13 段：`owner` / `group_wake` / `humanizer` / `interest` / `meme` / `search` / `speaker` / `cost` / `sleep` / `backup` / `context_guard` / `notify` / `page`。每一项的含义和默认值见 [`docs/使用手册.md`](docs/使用手册.md) 第 6 节。
+插件的数据都放在 AstrBot 的 `data/plugin_data/astrbot_plugin_dafeiyu_core/` 下（兴趣库、上下文压缩状态、发言记录、睡眠状态、备份），不修改 AstrBot 源码。
+备份文件包含人格、兴趣、会话历史等资料，**注意不要提交或外传**（`.gitignore` 已排除 `data/`、`plugin_data/`、`backups/`）。
 
-## 数据文件
-
-运行数据都在 `data/plugin_data/astrbot_plugin_dafeiyu_core/`：
-
-| 文件 | 内容 |
-| --- | --- |
-| `interests.json` | 兴趣库 + 观察中的候选 |
-| `context_state.json` | 每个会话的压缩记忆、群聊自动压缩状态 |
-| `speaker_log.json` | 群聊发言记录（每群几十条，滚动覆盖） |
-| `search_state.json` | 搜索每日次数与冷却 |
-| `sleep_state.json` | 睡眠状态、排队消息、群里攒的消息 |
-| `backups/` | 全量备份 JSON（默认只留最新 3 份） |
-
-备份 JSON 里包含人格、配置档案、兴趣、会话历史、发言记录、压缩状态等；恢复时不会写回会话历史和表情包清单（避免覆盖线上数据）。
-
-## 设计上的几个取舍
-
-- 只在配置的机器人上生效：一个 AstrBot 可能挂多个机器人，各段 `bot_filter` 可以分别控制。
-- 群聊不打扰主人：私聊用量快满时提醒主人并等 `/压缩`；群聊自己按「余量 / 安静时间 / 每天定时」三个条件自动压缩。
-- 隐私内容只私聊：上下文用量、备份详情、压缩结果、每晚报告都只发给主人，群里只回一句「私聊发你了」。
-- 支持 markdown 的机器人（QQ 官方机器人）上，报告自动排成表格；个人号（OneBot 等）自动降级成缩进纯文本。
-- 睡眠模式与备份都在夜里做：默认 3 点备份 + 整理，早上醒来补回夜里攒下的消息。
-
-## 常见问题
-
-- **命令没反应？** 指令只认主人，且要在 `notify.command_platforms` 里配置的机器人上发；群里默认不允许用指令（`command_group_enabled=false`）。
-- **她不说话？** 检查 `group_wake` / `interest` 的 `bot_filter` 是否包含当前机器人；私聊是否在睡眠模式里。
-- **发不了图？** 需要安装 `meme_manager` 并且至少有一个启用的图包。
-- **搜不到？** 没配 DeepSeek / 百度搜索 key 时搜索会直接跳过。
-
-## License
+## 许可
 
 MIT，见 [LICENSE](LICENSE)。
-
-## 更新记录
-
-见 [CHANGELOG.md](CHANGELOG.md)。
