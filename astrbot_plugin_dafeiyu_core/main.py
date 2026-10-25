@@ -37,7 +37,7 @@ from astrbot.core.platform.astr_message_event import MessageSesion
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 PLUGIN_ID = "astrbot_plugin_dafeiyu_core"
-VERSION = "2.3.4"
+VERSION = "2.3.5"
 REPO = "https://github.com/acceleratorcxy/astrbot_plugin_dafeiyu_core"
 
 _DATA_ROOT = Path(get_astrbot_plugin_data_path())
@@ -667,6 +667,19 @@ class Main(Star, owner_feature.OwnerFeature, group_wake_feature.GroupWakeFeature
             return interest_feature._note_text(result)
         except Exception:
             return str((result or {}).get("title") or "")
+
+    def merge_interests_now(self) -> list:
+        """把很像的兴趣合并成一条（晚上整理时自动跑，页面和 /兴趣 整理 也能手动触发）。"""
+        store = getattr(self, "_interest_store", None)
+        if store is None:
+            return []
+        try:
+            if not bool(interest_feature._RUNTIME.get("merge_enabled", True)):
+                return []
+            return store.merge_similar()
+        except Exception as exc:
+            logger.warning("[dafeiyu_core] 合并兴趣失败: %s", exc)
+            return []
 
     def interest_now(self) -> float:
         try:

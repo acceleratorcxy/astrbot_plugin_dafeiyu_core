@@ -134,8 +134,13 @@ def register_page_apis(plugin) -> None:
             profiles = []
         interests = []
         candidates = []
+        interest_merge = {}
         store = ctx_plugin._interest_store
         if store is not None:
+            try:
+                interest_merge = store.merge_brief()
+            except Exception:
+                interest_merge = {}
             for cand in store.candidates():
                 candidates.append(
                     {
@@ -196,6 +201,7 @@ def register_page_apis(plugin) -> None:
             "profiles": profiles,
             "interests": interests,
             "candidates": candidates,
+            "interest_merge": interest_merge,
             "backups": backups,
             "context": context_brief,
             "command": command_brief,
@@ -367,6 +373,26 @@ def register_page_apis(plugin) -> None:
     ctx.register_web_api(f"{p}/interest/remove", interest_remove, ["POST"], "删除兴趣")
     ctx.register_web_api(f"{p}/interest/update", interest_update, ["POST"], "修改兴趣")
     ctx.register_web_api(f"{p}/interest/search", interest_search, ["POST"], "搜索并记录兴趣")
+    async def interest_merge():
+        store = plugin._interest_store
+        if store is None:
+            return {"status": "error", "message": "兴趣库没准备好"}
+        try:
+            merged = store.merge_similar()
+        except Exception as exc:
+            return {"status": "error", "message": f"合并失败：{exc}"}
+        brief = store.merge_brief()
+        if not merged:
+            return {"status": "ok", "message": "看了一圈，没有能合并的兴趣", "count": 0, "merged": [], "data": {"merged": [], "brief": brief}}
+        return {
+            "status": "ok",
+            "message": f"合并了 {len(merged)} 组",
+            "count": len(merged),
+            "merged": merged,
+            "data": {"merged": merged, "brief": brief},
+        }
+
+    ctx.register_web_api(f"{p}/interest/merge", interest_merge, ["POST"], "合并相似兴趣")
     ctx.register_web_api(f"{p}/interest/note/update", interest_note_update, ["POST"], "编辑兴趣记录")
     ctx.register_web_api(f"{p}/interest/note/delete", interest_note_delete, ["POST"], "删除兴趣记录")
     ctx.register_web_api(f"{p}/interest/candidate/promote", candidate_promote, ["POST"], "把临时话题收进兴趣")

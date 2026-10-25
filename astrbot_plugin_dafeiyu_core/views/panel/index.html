@@ -235,6 +235,10 @@
     </div>
     <div class="card">
       <h2>兴趣库 <span class="hint">点「编辑」可改兴趣度、别名，或手动加一条记录；人设自带和主人相关的兴趣会被固定，不会自动清理</span></h2>
+      <div class="row" style="margin-bottom:8px">
+        <div class="grow muted" id="interest-merge-hint">晚上整理时会自动合并很像的兴趣；也可以现在手动整理一次</div>
+        <button id="btn-interest-merge">整理合并</button>
+      </div>
       <div id="interest-list"></div>
     </div>
     <div class="card">
@@ -579,6 +583,17 @@
   function renderInterests(ov) {
     var box = $("interest-list");
     if (!box) return;
+    var hint = $("interest-merge-hint");
+    if (hint) {
+      var m = (ov || {}).interest_merge || {};
+      var last = m.last || {};
+      if (last && last.count) {
+        var pairs = (last.pairs || []).slice(0, 3).map(function (p) { return p.keep + " ← " + p.drop; });
+        hint.textContent = "上次整理合并了 " + last.count + " 组" + (pairs.length ? "（" + pairs.join("；") + "）" : "") + " · 晚上整理时会自动合并";
+      } else {
+        hint.textContent = "晚上整理时会自动合并很像的兴趣；也可以现在手动整理一次";
+      }
+    }
     box.innerHTML = "";
     var rows = (ov || {}).interests || [];
     if (!rows.length) { box.appendChild(el("div", "empty", "兴趣库还是空的")); return; }
@@ -775,6 +790,17 @@
       toast("已添加", "ok");
       loadOverview(true);
     }).catch(fail);
+  }
+  function mergeInterests() {
+    var btn = $("btn-interest-merge");
+    if (btn) { btn.disabled = true; btn.textContent = "整理中…"; }
+    apiPost("page/interest/merge", {}).then(function (data) {
+      var n = (data && data.count) || 0;
+      toast(n ? ("合并了 " + n + " 组") : "看了一圈，没有能合并的", n ? "ok" : "");
+      loadOverview(true);
+    }).catch(fail).then(function () {
+      if (btn) { btn.disabled = false; btn.textContent = "整理合并"; }
+    });
   }
   function searchInterest() {
     var topic = $("interest-search-topic").value.trim();
@@ -1216,6 +1242,7 @@
     });
     $("btn-interest-add").addEventListener("click", addInterest);
     $("btn-interest-search").addEventListener("click", searchInterest);
+    $("btn-interest-merge").addEventListener("click", mergeInterests);
     $("btn-backup-create").addEventListener("click", createBackup);
     $("btn-ctx-refresh").addEventListener("click", loadContext);
     $("backup-file").addEventListener("change", function (event) {

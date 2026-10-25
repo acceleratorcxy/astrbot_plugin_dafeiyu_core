@@ -481,6 +481,26 @@
         "description": "主人说话时兴趣度门槛的缩放（0.7 = 门槛更低，更容易触发）",
         "type": "float",
         "default": 0.7
+      },
+      "merge_enabled": {
+        "description": "晚上整理时自动合并很像的兴趣（同名/别名相近/来源记录重复）",
+        "type": "bool",
+        "default": true
+      },
+      "merge_threshold": {
+        "description": "合并相似度门槛（0.5~1，越高越保守；0.82 只合很像的）",
+        "type": "float",
+        "default": 0.82
+      },
+      "merge_max_notes": {
+        "description": "合并后每条兴趣最多留几条记录",
+        "type": "int",
+        "default": 12
+      },
+      "merge_max_pairs": {
+        "description": "一次整理最多合并几组（防止一次改太多）",
+        "type": "int",
+        "default": 20
       }
     }
   },

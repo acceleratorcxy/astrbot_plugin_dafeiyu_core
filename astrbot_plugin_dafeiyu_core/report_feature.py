@@ -382,6 +382,7 @@ async def build_model(plugin: Any, result: dict | None = None, top_context: int 
             model["interest"] = {
                 "count": len(store.interests()),
                 "candidates": len(store.candidates()),
+                "merge": store.merge_brief(),
             }
         except Exception:
             model["interest"] = {}
@@ -583,6 +584,20 @@ def render_markdown(model: dict) -> str:
             ["群档案", "%s 个群" % counts.get("knowledge_groups", 0)],
         ]
         parts.append("### 📦 资料\n\n" + md_table(["项目", "数量"], rows, "lr"))
+    interest = model.get("interest") or {}
+    if interest:
+        merge = interest.get("merge") or {}
+        last = merge.get("last") or {}
+        pairs = last.get("pairs") if isinstance(last, dict) else None
+        rows = [["现在", "%s 条（观察中 %s 条）" % (interest.get("count", 0), interest.get("candidates", 0))]]
+        if pairs:
+            detail = "；".join("%s ← %s" % (p.get("keep"), p.get("drop")) for p in pairs[:4] if isinstance(p, dict))
+            rows.append(["上次整理合并", "%s 组：%s" % (last.get("count", len(pairs)), detail)])
+        else:
+            rows.append(["上次整理合并", "—"])
+        if merge.get("total"):
+            rows.append(["累计合并", "%s 组" % merge.get("total")])
+        parts.append("### 🎯 兴趣\n\n" + md_table(["项目", "内容"], rows))
     night = model.get("night") or []
     if night:
         parts.append(
@@ -658,9 +673,13 @@ def render_plain(model: dict) -> str:
     blocks.append("\n".join(block))
     interest = model.get("interest") or {}
     if interest:
-        blocks.append(
-            "【兴趣】\n  · 现在 %s 条 · 观察中 %s 条" % (interest.get("count", 0), interest.get("candidates", 0))
-        )
+        lines = ["【兴趣】", "  · 现在 %s 条 · 观察中 %s 条" % (interest.get("count", 0), interest.get("candidates", 0))]
+        last = (interest.get("merge") or {}).get("last") or {}
+        pairs = last.get("pairs") if isinstance(last, dict) else None
+        if pairs:
+            detail = "；".join("%s ← %s" % (p.get("keep"), p.get("drop")) for p in pairs[:4] if isinstance(p, dict))
+            lines.append("  · 整理时合并 %s 组：%s" % (last.get("count", len(pairs)), detail))
+        blocks.append("\n".join(lines))
     cost = model.get("cost")
     if cost:
         totals = cost.get("totals") or {}

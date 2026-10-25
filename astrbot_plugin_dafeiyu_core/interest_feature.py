@@ -27,6 +27,7 @@
 # 方法上的 filter/llm_tool 装饰器保留，由统一插件的 Main 多继承并复用。"""
 from __future__ import annotations
 import asyncio
+import difflib
 import hashlib
 import json
 import os
@@ -48,7 +49,7 @@ except Exception:
     silent_guard = None
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 PLUGIN_ID = 'astrbot_plugin_dafeiyu_interest'
-DEFAULTS = {'enabled': True, 'bot_filter': [], 'wake_enabled': True, 'wake_probability': 55, 'wake_threshold': 0.45, 'wake_cooldown_seconds': 180, 'wake_related_enabled': True, 'wake_related_probability': 35, 'wake_related_min_score': 0.35, 'master_wake_boost': 1.6, 'master_wake_threshold_scale': 0.7, 'only_group': True, 'hints_enabled': True, 'hints_max_items': 3, 'hints_max_notes': 2, 'auto_search_enabled': True, 'auto_search_min_affinity': 0.7, 'auto_search_cooldown_seconds': 1800, 'auto_search_max_per_day': 6, 'auto_search_top_k': 3, 'max_notes_per_interest': 8, 'candidate_ttl_days': 3, 'promote_mentions': 3, 'interest_ttl_days': 7, 'prune_enabled': True, 'prune_interval_seconds': 3600, 'affinity_decay_per_day': 0.02}
+DEFAULTS = {'enabled': True, 'bot_filter': [], 'wake_enabled': True, 'wake_probability': 55, 'wake_threshold': 0.45, 'wake_cooldown_seconds': 180, 'wake_related_enabled': True, 'wake_related_probability': 35, 'wake_related_min_score': 0.35, 'master_wake_boost': 1.6, 'master_wake_threshold_scale': 0.7, 'only_group': True, 'hints_enabled': True, 'hints_max_items': 3, 'hints_max_notes': 2, 'auto_search_enabled': True, 'auto_search_min_affinity': 0.7, 'auto_search_cooldown_seconds': 1800, 'auto_search_max_per_day': 6, 'auto_search_top_k': 3, 'max_notes_per_interest': 8, 'candidate_ttl_days': 3, 'promote_mentions': 3, 'interest_ttl_days': 7, 'prune_enabled': True, 'prune_interval_seconds': 3600, 'affinity_decay_per_day': 0.02, 'merge_enabled': True, 'merge_threshold': 0.82, 'merge_max_notes': 12, 'merge_max_pairs': 20}
 SEED_INTERESTS = [{'name': '鲸鱼', 'aliases': ['鲸', '小鲸鱼', 'whale'], 'affinity': 0.82}, {'name': '白饭', 'aliases': ['米饭', '干饭', '大米饭'], 'affinity': 0.66}, {'name': '摸鱼', 'aliases': ['偷懒', '划水', '摆烂'], 'affinity': 0.6}, {'name': '表情包', 'aliases': ['梗图', 'meme'], 'affinity': 0.58}]
 BAIDU_SEARCH_URL = 'https://qianfan.baidubce.com/v2/ai_search/web_search'
 TZ = timezone(timedelta(hours=8))
@@ -105,10 +106,12 @@ def _apply_runtime(config) -> None:
             _RUNTIME[key] = max(0.0, min(1.0, _as_float(value, float(DEFAULTS[key]))))
         elif key in ('wake_cooldown_seconds', 'auto_search_min_affinity', 'auto_search_cooldown_seconds'):
             _RUNTIME[key] = _as_float(value, float(DEFAULTS[key]))
-        elif key in ('hints_max_items', 'hints_max_notes', 'auto_search_max_per_day', 'auto_search_top_k', 'max_notes_per_interest', 'candidate_ttl_days', 'promote_mentions', 'interest_ttl_days', 'prune_interval_seconds'):
+        elif key in ('hints_max_items', 'hints_max_notes', 'auto_search_max_per_day', 'auto_search_top_k', 'max_notes_per_interest', 'candidate_ttl_days', 'promote_mentions', 'interest_ttl_days', 'prune_interval_seconds', 'merge_max_notes', 'merge_max_pairs'):
             _RUNTIME[key] = _as_int(value, int(DEFAULTS[key]))
         elif key == 'affinity_decay_per_day':
             _RUNTIME[key] = max(0.0, _as_float(value, float(DEFAULTS[key])))
+        elif key == 'merge_threshold':
+            _RUNTIME[key] = max(0.5, min(1.0, _as_float(value, float(DEFAULTS[key]))))
         else:
             _RUNTIME[key] = bool(value)
     if not _RUNTIME['bot_filter']:
@@ -198,6 +201,69 @@ def _related_score(item: dict[str, Any], text_tokens: dict[str, set[str]]) -> fl
     if not ascii_hit and len(cjk_hit) < 3:
         score = min(score, 0.25)
     return min(1.0, score)
+
+_MERGE_KIND_RANK = {'persona': 3, 'master': 2, 'auto': 1}
+_MERGE_STRIP_RE = re.compile(r'[^0-9a-z\u4e00-\u9fff]+')
+
+def _norm_name(name) -> str:
+    """把名字规范化：小写、去掉空格和标点，只留中英文数字。"""
+    return _MERGE_STRIP_RE.sub('', str(name or '').lower())
+
+def _name_similarity(a, b) -> float:
+    """两个名字/别名的相似度（0~1）：一样 1.0，一个包含另一个 0.9，否则看字符相似度。"""
+    na, nb = _norm_name(a), _norm_name(b)
+    if not na or not nb:
+        return 0.0
+    if na == nb:
+        return 1.0
+    short, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
+    if len(short) >= 2 and short in longer:
+        return 0.9
+    try:
+        return difflib.SequenceMatcher(None, na, nb).ratio()
+    except Exception:
+        return 0.0
+
+def _item_names(item) -> list[str]:
+    names = [str(item.get('name') or '')]
+    names.extend(str(a) for a in (item.get('aliases') or []))
+    return [n.strip() for n in names if n and n.strip()]
+
+def _item_urls(item) -> set[str]:
+    urls = set()
+    for note in item.get('notes') or []:
+        url = str((note or {}).get('url') or '').strip()
+        if url:
+            urls.add(url)
+    return urls
+
+def _merge_pair_score(a, b) -> float:
+    """两条兴趣有多像：名字/别名相似度，或者共享两条以上来源链接。"""
+    best = 0.0
+    for na in _item_names(a):
+        for nb in _item_names(b):
+            best = max(best, _name_similarity(na, nb))
+            if best >= 1.0:
+                break
+        if best >= 1.0:
+            break
+    shared = _item_urls(a) & _item_urls(b)
+    if len(shared) >= 2:
+        best = max(best, 0.85)
+    return best
+
+def _merge_winner(a, b):
+    """保留哪条：固定兴趣优先（人设 > 主人 > 自动），再看兴趣度、提到次数、谁更早。"""
+    def rank(item):
+        kind = str(item.get('kind') or 'auto')
+        return (
+            _MERGE_KIND_RANK.get(kind, 1),
+            1 if item.get('pinned') else 0,
+            _as_float(item.get('affinity'), 0.0),
+            _as_int(item.get('mention_count'), 0),
+            -_as_float(item.get('created_at'), 0.0),
+        )
+    return a if rank(a) >= rank(b) else b
 
 class InterestStore:
     """兴趣库（单文件 JSON，原子写入）。"""
@@ -349,6 +415,99 @@ class InterestStore:
 
     def top(self, limit: int=3) -> list[dict[str, Any]]:
         return sorted(self.interests(), key=lambda x: x.get('affinity', 0.0), reverse=True)[:limit]
+
+    @staticmethod
+    def _dedupe_notes(notes, cap: int) -> list[dict]:
+        seen = set()
+        out = []
+        for note in sorted((n for n in notes if isinstance(n, dict)), key=lambda n: _as_float(n.get('at'), 0.0)):
+            key = str(note.get('url') or '').strip() or _norm_name(str(note.get('text') or ''))[:120]
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(note)
+        if cap > 0:
+            out = out[-cap:]
+        return out
+
+    def _absorb_interest(self, keep: dict[str, Any], drop: dict[str, Any], notes_cap: int) -> None:
+        """把 drop 的别名、记录、热度都并进 keep（保留更重要的那条）。"""
+        keep_names = {_norm_name(keep.get('name'))}
+        aliases: list[str] = []
+        for alias in list(keep.get('aliases') or []) + [str(drop.get('name') or '')] + list(drop.get('aliases') or []):
+            norm = _norm_name(alias)
+            if not norm or norm in keep_names:
+                continue
+            keep_names.add(norm)
+            aliases.append(str(alias).strip())
+        keep['aliases'] = aliases[:12]
+        if drop.get('pinned') and not keep.get('pinned'):
+            keep['pinned'] = True
+            keep['kind'] = str(drop.get('kind') or 'master')
+        keep['affinity'] = round(max(_as_float(keep.get('affinity'), 0.0), _as_float(drop.get('affinity'), 0.0)), 4)
+        keep['mention_count'] = _as_int(keep.get('mention_count'), 0) + _as_int(drop.get('mention_count'), 0)
+        keep['last_mention'] = max(_as_float(keep.get('last_mention'), 0.0), _as_float(drop.get('last_mention'), 0.0))
+        keep['last_search'] = max(_as_float(keep.get('last_search'), 0.0), _as_float(drop.get('last_search'), 0.0))
+        keep['last_seen'] = max(_as_float(keep.get('last_seen'), 0.0), _as_float(drop.get('last_seen'), 0.0))
+        keep['created_at'] = min(_as_float(keep.get('created_at'), 0.0), _as_float(drop.get('created_at'), 0.0))
+        keep['notes'] = self._dedupe_notes(list(keep.get('notes') or []) + list(drop.get('notes') or []), notes_cap)
+        merged_from = [str(n) for n in (keep.get('merged_from') or []) if n]
+        for name in [str(drop.get('name') or '')] + [str(n) for n in (drop.get('merged_from') or []) if n]:
+            if name and name not in merged_from:
+                merged_from.append(name)
+        keep['merged_from'] = merged_from[:10]
+        keep['merged_at'] = _now()
+
+    def merge_similar(self, threshold: float | None = None) -> list[dict[str, Any]]:
+        """把名字/别名/来源记录很像的兴趣合并成一条（晚上整理时自动跑，页面和命令也能手动触发）。"""
+        limit = _as_float(threshold if threshold is not None else _RUNTIME.get('merge_threshold'), 0.82)
+        limit = max(0.5, min(1.0, limit))
+        notes_cap = _as_int(_RUNTIME.get('merge_max_notes'), 12)
+        max_pairs = max(1, _as_int(_RUNTIME.get('merge_max_pairs'), 20))
+        merged: list[dict[str, Any]] = []
+        for _ in range(max_pairs):
+            items = self.interests()
+            if len(items) < 2:
+                break
+            best = None
+            for i in range(len(items)):
+                for j in range(i + 1, len(items)):
+                    score = _merge_pair_score(items[i], items[j])
+                    if score >= limit and (best is None or score > best[0]):
+                        best = (score, i, j)
+            if best is None:
+                break
+            score, i, j = best
+            first, second = items[i], items[j]
+            keep = _merge_winner(first, second)
+            drop = second if keep is first else first
+            self._absorb_interest(keep, drop, notes_cap)
+            try:
+                self.data['interests'].remove(drop)
+            except ValueError:
+                pass
+            record = {'at': _now(), 'keep': str(keep.get('name') or ''), 'drop': str(drop.get('name') or ''), 'score': round(float(score), 2)}
+            merged.append(record)
+            logger.info('[dafeiyu_interest] 兴趣合并：「%s」←「%s」（相似度 %.2f）', record['keep'], record['drop'], score)
+        if merged:
+            stats = self.data.setdefault('stats', {})
+            history = stats.get('merges')
+            if not isinstance(history, list):
+                history = []
+            history.extend(merged)
+            stats['merges'] = history[-30:]
+            stats['last_merge'] = {'at': _now(), 'count': len(merged), 'pairs': merged[-6:]}
+            stats['merged_total'] = _as_int(stats.get('merged_total'), 0) + len(merged)
+            self.save()
+            logger.info('[dafeiyu_interest] 本次共合并 %s 组兴趣', len(merged))
+        return merged
+
+    def merge_brief(self) -> dict[str, Any]:
+        """给报告/页面用：最近一次合并了几组、合并了哪些。"""
+        stats = self.data.get('stats') or {}
+        last = stats.get('last_merge') if isinstance(stats.get('last_merge'), dict) else {}
+        recent = stats.get('merges') if isinstance(stats.get('merges'), list) else []
+        return {'last': last, 'total': _as_int(stats.get('merged_total'), 0), 'recent': recent[-5:], 'enabled': bool(_RUNTIME.get('merge_enabled', True)), 'threshold': _as_float(_RUNTIME.get('merge_threshold'), 0.82)}
 
     def add(self, name: str, aliases=None, affinity: float=0.6, pinned: bool=False, kind: str='auto') -> dict[str, Any]:
         item = self.get_by_name(name)
@@ -1142,6 +1301,17 @@ class InterestFeature:
                 item = _STORE.add(name, aliases, 0.7, pinned=True, kind='master')
                 yield event.plain_result(f'记下了，我对「{item['name']}」感兴趣（这个会一直留着）。')
                 return
+            if action in ('整理', '合并', 'merge'):
+                if not self._is_master(event):
+                    yield event.plain_result('只有主人能整理兴趣库。')
+                    return
+                merged = _STORE.merge_similar()
+                if not merged:
+                    yield event.plain_result('看了一圈，没有能合并的。')
+                    return
+                rows = ['%s ← %s' % (m.get('keep'), m.get('drop')) for m in merged[:6]]
+                yield event.plain_result('合并了 %s 组：%s' % (len(merged), '；'.join(rows)))
+                return
             if action in ('删', '删除'):
                 if not self._is_master(event):
                     yield event.plain_result('只有主人能删。')
@@ -1190,7 +1360,7 @@ class InterestFeature:
             if item:
                 yield event.plain_result(f'{item['name']}：喜欢 {item.get('affinity', 0):.2f}')
                 return
-            yield event.plain_result('用法：/兴趣 | /兴趣 加 名字 别名 | /兴趣 删 名字 | /兴趣 搜 话题 | /兴趣 记 名字 内容 | /兴趣 看 名字')
+            yield event.plain_result('用法：/兴趣 | /兴趣 加 名字 别名 | /兴趣 删 名字 | /兴趣 搜 话题 | /兴趣 记 名字 内容 | /兴趣 看 名字 | /兴趣 整理')
         except Exception as exc:
             logger.warning('[dafeiyu_interest] /兴趣 命令出错: %s', exc)
 

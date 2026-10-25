@@ -627,6 +627,14 @@ class BackupManager:
                 await asyncio.sleep(delay)
                 if self._stopping:
                     return
+                merge = getattr(self.plugin, "merge_interests_now", None)
+                if merge is not None:
+                    try:
+                        merged = merge()
+                        if merged:
+                            logger.info("[dafeiyu_core] 晚间整理合并了 %s 组兴趣", len(merged))
+                    except Exception as exc:
+                        logger.warning("[dafeiyu_core] 晚间整理兴趣失败: %s", exc)
                 if bool(self.cfg.get("enabled", True)):
                     result = await self.create(reason="auto")
                     if bool(self.plugin._notify_section().get("nightly_report", True)):
