@@ -117,7 +117,7 @@
       "engaged_window_seconds": {
         "description": "续聊盯多久（秒，超时就不管这个群了）",
         "type": "int",
-        "default": 180
+        "default": 240
       },
       "engaged_idle_seconds": {
         "description": "群里安静多少秒后退出续聊",
@@ -173,6 +173,11 @@
         "description": "主人连续发言的最小间隔（秒，防刷屏）",
         "type": "int",
         "default": 20
+      },
+      "engaged_grace_seconds": {
+        "description": "续聊窗口过了多久之内还允许补一句（秒；要给话题留点余量，治她慢半拍）",
+        "type": "int",
+        "default": 90
       }
     }
   },
@@ -613,6 +618,21 @@
         "description": "同一张图的描述缓存多久（分钟，省费用）",
         "type": "int",
         "default": 1440
+      },
+      "fresh_block_enabled": {
+        "description": "每次群聊回话都带上「现在几点 + 群里最新几条」（防止她接已经过时的旧话题）",
+        "type": "bool",
+        "default": true
+      },
+      "fresh_lines": {
+        "description": "「群里最新几条」带几条（越多越不容易跑题，也越费 token）",
+        "type": "int",
+        "default": 4
+      },
+      "fresh_minutes": {
+        "description": "「群里最新几条」只看最近多少分钟内的消息",
+        "type": "int",
+        "default": 15
       }
     }
   },

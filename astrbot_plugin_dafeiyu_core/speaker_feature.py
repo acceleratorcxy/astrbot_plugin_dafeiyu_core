@@ -60,11 +60,15 @@ DEFAULTS = {
     'image_caption_ttl_minutes': 1440,
     'image_direct_enabled': True,
     'image_direct_max': 3,
+    'fresh_block_enabled': True,
+    'fresh_lines': 4,
+    'fresh_minutes': 15,
 }
 
 _RUNTIME: dict = dict(DEFAULTS)
 MARK = '【群聊发言记录】'
 MARK_MASTER = '【主人这句话可能没头没尾】'
+MARK_FRESH = '【群里最新几条】'
 _DEICTIC = ('这个', '那个', '刚才', '上面', '前面', '楼上', '它', '那', '这', '咋', '怎么', '为什么', '为啥', '啥意思', '什么意思', '你说呢', '你觉得')
 _QUESTION = ('？', '?', '吗', '呢', '咋', '怎么', '为什么', '为啥', '啥', '多少', '谁', '哪', '是不是', '有没有')
 # 带「回指」的说法：没有上下文根本看不出指的是哪件事/哪个人
@@ -73,6 +77,17 @@ _BACKREF = (
     '他说', '她说', '那个', '这个', '这件事', '那件事', '继续', '接着', '然后呢', '还有呢',
     '你们在聊', '聊什么', '说什么', '你说呢', '你觉得', '你怎么看', '那你说',
 )
+# 主人这句像在催/追问上文的说法（说明白点、然后呢、啥意思之类）
+_FOLLOWUP = (
+    '说明白', '说清楚', '啥意思', '什么意思', '展开', '细说', '讲讲', '具体',
+    '然后呢', '继续', '接着', '咋了', '怎么回事', '真的', '哪个', '谁啊', '为什么',
+)
+# 纯应答词不算「没头没尾」，免得每句「好的」都补一遍上下文
+_BACKCHANNEL = (
+    '好的', '好', '行', '嗯', '哦', '收到', '谢谢', '笑死', '哈哈', '草', '绷',
+    '确实', '可以', '没事', '晚安', '睡了', '早', '来了', '在', '？', '?',
+)
+
 # 短句里出现这些，才当作「没头没尾」
 _PRONOUN = ('他', '她', '它', '这', '那', '啥', '谁', '哪', '咋', '怎么', '为什么', '吗', '什么')
 _EXTRA_RECORDED = 'dafeiyu_speaker_recorded'
@@ -123,6 +138,8 @@ def _apply_runtime(config) -> None:
             'master_context_short_chars',
             'context_short_chars',
             'context_question_chars',
+            'fresh_lines',
+            'fresh_minutes',
         ):
             _RUNTIME[key] = max(1, _as_int(value, int(DEFAULTS[key])))
         elif key in ('image_caption_max', 'image_caption_ttl_minutes', 'image_direct_max'):
@@ -424,6 +441,53 @@ def _needs_context(text: str) -> bool:
     return False
 
 
+async def fresh_block(event: AstrMessageEvent, plugin) -> str:
+    """群聊每次回话都带上「现在几点 + 群里最新几条」，免得她接已经过时的旧话题（慢半拍）。"""
+    try:
+        if not _RUNTIME.get('fresh_block_enabled', True):
+            return ''
+        umo = getattr(event, 'unified_msg_origin', '') or ''
+        if not umo or not _bot_match(umo):
+            return ''
+        try:
+            group_id = str(event.get_group_id() or '')
+        except Exception:
+            group_id = ''
+        if _RUNTIME.get('only_group', True) and not group_id and ':GroupMessage:' not in umo:
+            return ''
+        items = _LOG.get(umo) or []
+        if not items:
+            return ''
+        now = _now()
+        window = _as_int(_RUNTIME.get('fresh_minutes'), 15) * 60
+        lines_n = _as_int(_RUNTIME.get('fresh_lines'), 4)
+        recent = [entry for entry in items if now - float(entry.get('t') or 0) <= window]
+        if not recent:
+            return ''
+        picked = recent[-lines_n:]
+        sid = _sender_id(event)
+        current = (event.message_str or '').strip().replace(chr(10), ' ')[: _as_int(_RUNTIME.get('max_chars'), 40)]
+        trigger_t = 0.0
+        for entry in reversed(recent):
+            if entry.get('s') == (sid[-6:] if sid else '') and (entry.get('x') or '') == current:
+                trigger_t = float(entry.get('t') or 0)
+                break
+        lines = [MARK_FRESH + '现在是 %s。下面是群里最新的几条（含你没回的，按时间从旧到新）：' % _fmt_time(now)]
+        for entry in picked:
+            lines.append(_line_of(entry))
+        if trigger_t and now - trigger_t >= 5:
+            lines.append(
+                '你要回的那条「%s」是 %s 发的，已经过去 %d 秒；这期间群里又说了上面这些，回话以最新的为准，别拿更早的旧话题套上。'
+                % (current[:30], _fmt_time(trigger_t), int(now - trigger_t))
+            )
+        else:
+            lines.append('回话接最新这几条；要是最新几条已经换了话题，就跟着换，别拿旧话题硬套。')
+        return chr(10).join(lines)
+    except Exception as exc:
+        logger.debug('[dafeiyu_speaker] 拼最新消息块失败: %s', exc)
+        return ''
+
+
 async def digest_block(event: AstrMessageEvent, plugin) -> tuple[str, list[str]]:
     """拼出「最近的群聊发言」临时块（排除本轮这条，它已经作为用户消息进了上下文）。
 
@@ -522,7 +586,9 @@ async def master_context_block(event: AstrMessageEvent, plugin) -> tuple[str, li
         short_chars = _as_int(_RUNTIME.get('master_context_short_chars'), 8)
         short = len(text) <= short_chars and any(word in text for word in _QUESTION + _PRONOUN)
         deictic = len(text) <= 20 and any(word in text for word in _DEICTIC)
-        if not (short or deictic):
+        followup = any(word in text for word in _FOLLOWUP)
+        tiny = len(text) <= 6 and not any(word in text for word in _BACKCHANNEL)
+        if not (short or deictic or followup or tiny):
             return '', []
         items = _LOG.get(umo) or []
         if not items:
@@ -616,15 +682,22 @@ class SpeakerFeature:
         try:
             record(event)
             block, refs = await digest_block(event, self)
-            if not block:
-                return
-            part = TextPart(text=block)
-            try:
-                part.mark_as_temp()
-            except Exception:
-                pass
-            req.extra_user_content_parts.append(part)
-            _attach_images(req, refs)
+            if block:
+                part = TextPart(text=block)
+                try:
+                    part.mark_as_temp()
+                except Exception:
+                    pass
+                req.extra_user_content_parts.append(part)
+                _attach_images(req, refs)
+            fresh = await fresh_block(event, self)
+            if fresh:
+                fpart = TextPart(text=fresh)
+                try:
+                    fpart.mark_as_temp()
+                except Exception:
+                    pass
+                req.extra_user_content_parts.append(fpart)
         except Exception as exc:
             logger.warning('[dafeiyu_speaker] 注入群聊发言记录失败: %s', exc)
 

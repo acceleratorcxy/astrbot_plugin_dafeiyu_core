@@ -119,7 +119,8 @@
 
 ## 群聊续聊 / 热闹加成（group_wake 段）
 
-- 她回完一句后进入「续聊盯梢」`engaged_window_seconds`（默认 180 秒）：这几秒里如果群里接着聊的话题跟她刚说的/兴趣相关（不必叫名字），按 `engaged_probability`（80%）× 相关度继续接，最多连 `engaged_max_turns`（6 句）；连续 2 次不相关或没人说话就退出。相关度算法：关键词 1.0、与她上一句 bigram 重合、与最近 3 条群友消息重合、兴趣相关、问句/接茬/指代加分。
+- 她回完一句后进入「续聊盯梢」`engaged_window_seconds`（默认 240 秒）：这几秒里如果群里接着聊的话题跟她刚说的/兴趣相关（不必叫名字），按 `engaged_probability`（80%）× 相关度继续接，最多连 `engaged_max_turns`（6 句）；连续 2 次不相关或没人说话就退出。相关度算法：关键词 1.0、与她上一句 bigram 重合、与最近 3 条群友消息重合、兴趣相关、问句/接茬/指代加分。
+- 续聊宽限 `engaged_grace_seconds`（默认 90 秒）：过了盯梢窗口但没过宽限时不清状态，只要这条消息还挺相关（相关度 ≥0.45）就再跟一句，治「刚好在窗口边缘到的消息永远接不上」（慢半拍）。
 - 群里热闹加成：`lively_window_seconds`（120 秒）内消息数超过 `lively_min_messages`（6）条后，随机搭话/续聊/兴趣接话的概率乘 `1+(超出数/门槛)`，最多乘 `lively_max_boost`（3 倍）；`lively_boost_enabled` 可关。
 - 坑：续聊不能用 `event.is_wake` 判断（别的插件 filter 通过也会置 True），只看 `is_at_or_wake_command` 和真唤醒 extra 标记。
 
@@ -131,7 +132,8 @@
 - 页面「上下文」tab 顶部会显示「群聊发言记录：开着（记了 N 个群 / M 条…）」。
 - **看人看全**：记录里带名字（主人显示「主人」，别人带群昵称）；别人发的图片/表情默认**把原图直接附在这次请求里**给多模态主模型看（`image_direct_enabled` 默认开、`image_direct_max` 默认 3 张/次），不额外花一次转述的钱；只有主模型看不了图（provider 的 `modalities` 里没有 `image`）时才退回「先用视觉模型转述成一句 `［图：描述］`」（`image_caption_*` 那几个配置，`image_caption_ttl_minutes` 是转述缓存）。`context_always` 默认开=每次回复都带记录；关掉则退回下面「按需」模式。
 - **按需补上下文**（`context_on_demand`，默认开）：只有她真要回、且这句话「看不懂」（指代/短问句/问句结尾，见 `context_short_chars`=6、`context_question_chars`=12）时才把群聊记录注入；能看懂的完整句子不读记录（日志「这句能看懂，不读群聊上下文」）。
-- **主人没头没尾**（`master_context_enabled`，默认开）：群聊里的主人发短句（≤`master_context_short_chars`=8 且含问词代词）或带指代的短句（≤20 字）时，自动补「最近 `master_context_minutes`（30 分钟）内别人在聊的最多 `master_context_lines`（12）条」，让她先猜主人指哪件事再回；猜不准要直说没看懂。
+- **新鲜度块**（`fresh_block_enabled`，默认开）：每次群聊回复前都单独注入一小块「现在是 HH:MM + 最近 `fresh_minutes`（15）分钟内最后 `fresh_lines`（4）条（含她没回的）」，并且如果她要回的那条已经过去 ≥5 秒，会明确提示「这期间群里又说了上面这些，回话以最新的为准，别拿更早的旧话题套上」。治「话题已经换了，她还在接旧话题」的慢半拍。
+- **主人没头没尾**（`master_context_enabled`，默认开）：群聊里的主人发短句（≤`master_context_short_chars`=8 且含问词代词）、带指代的短句（≤20 字）、追问词（`_FOLLOWUP`：说明白/说清楚/展开/细说/然后呢/怎么回事…）或 ≤6 字又不是纯语气词（「好的」「嗯」这类不补）时，自动补「最近 `master_context_minutes`（30 分钟）内别人在聊的最多 `master_context_lines`（12）条」，让她先猜主人指哪件事再回；猜不准要直说没看懂。
 
 ## 群档案知识库（knowledge 段）
 

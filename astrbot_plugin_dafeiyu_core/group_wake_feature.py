@@ -49,10 +49,11 @@ DEFAULTS = {
     'engaged_enabled': True,
     'engaged_probability': 80,
     'engaged_min_score': 0.2,
-    'engaged_window_seconds': 180,
+    'engaged_window_seconds': 240,
     'engaged_idle_seconds': 120,
     'engaged_max_turns': 6,
     'engaged_cooldown_seconds': 10,
+    'engaged_grace_seconds': 90,
     'engaged_use_interest': True,
     'lively_boost_enabled': True,
     'lively_window_seconds': 120,
@@ -121,6 +122,7 @@ def _apply_runtime(config) -> None:
             'engaged_idle_seconds',
             'engaged_max_turns',
             'engaged_cooldown_seconds',
+            'engaged_grace_seconds',
             'master_reply_probability',
             'master_reply_cooldown_seconds',
             'lively_window_seconds',
@@ -461,14 +463,19 @@ def _engaged_should_wake(event) -> bool:
             return False
         count = _note_activity(event, umo)
         now = time.time()
-        window = _as_float(_RUNTIME.get('engaged_window_seconds'), 180.0)
+        window = _as_float(_RUNTIME.get('engaged_window_seconds'), 240.0)
         idle = _as_float(_RUNTIME.get('engaged_idle_seconds'), 120.0)
+        grace = _as_float(_RUNTIME.get('engaged_grace_seconds'), 90.0)
         last_reply = _as_float(state.get('last_reply_at'), 0.0)
         last_msg = _as_float(state.get('last_msg_at'), last_reply)
+        late = 0.0
         if now - last_reply > window:
-            _engaged_clear(key, '超过关注时间')
-            return False
-        if now - last_msg > idle:
+            late = now - last_reply - window
+            # 刚过期的一点时间里，如果这句跟刚才聊的很相关，还是允许再跟一句（治「慢半拍」）
+            if grace <= 0 or late > grace:
+                _engaged_clear(key, '超过关注时间')
+                return False
+        if late <= 0 and now - last_msg > idle:
             _engaged_clear(key, '没人说话了')
             return False
         turns = int(state.get('turns') or 0)
@@ -483,6 +490,9 @@ def _engaged_should_wake(event) -> bool:
         recent_user = [str(item.get('x') or '') for item in (_RECENT_USER.get(umo) or [])[-3:]]
         score, why = _engagement_score(event, text, recent_user)
         min_score = _as_float(_RUNTIME.get('engaged_min_score'), 0.2)
+        if late > 0:
+            # 已经出了正常窗口，要求跟刚才的话题更相关才接
+            min_score = max(min_score, 0.45)
         if score < min_score:
             misses = int(state.get('misses') or 0) + 1
             state['misses'] = misses
@@ -496,6 +506,8 @@ def _engaged_should_wake(event) -> bool:
         probability = min(100.0, probability * max(1.0, boost))
         if probability <= 0 or random.random() * 100.0 >= probability:
             return False
+        if late > 0:
+            logger.info('[dafeiyu_group_wake] 续聊刚过期 %.0f 秒，这条还挺相关（%.2f），再跟一句: %s', late, score, key)
         _LAST_ENGAGED[key] = now
         state['last_msg_at'] = now
         state['recent_user'] = recent_user[-2:] + [text[:120]]
