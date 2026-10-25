@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import importlib
 import re
 import sys
 from typing import Any
@@ -43,7 +44,10 @@ def _apply_runtime(section: dict | None) -> None:
     section = section if isinstance(section, dict) else {}
     for key, default in DEFAULTS.items():
         value = section.get(key)
-        if value is None or value == "":
+        # 只有「没配」才回落默认；配置页里被清空的空串要保留，
+        # 否则 report_target / report_platform_id 清空后会又变回硬编码的 openid，
+        # 没法通过清空来关掉官方机器人通道（send() 里 target 为空会走 fallback）。
+        if value is None:
             value = default
         if isinstance(default, bool):
             _RUNTIME[key] = bool(value)
@@ -55,7 +59,8 @@ def _apply_runtime(section: dict | None) -> None:
 def _cfg(plugin: Any, key: str, default: Any = None) -> Any:
     """优先用运行时值，取不到再读插件配置。"""
     value = _RUNTIME.get(key)
-    if value is not None and value != "":
+    if value is not None:
+        # 空串是「主人主动清空」的意思，原样返回（不能回落到 DEFAULTS 的硬编码值）
         return value
     try:
         section = plugin._section("notify")
@@ -229,12 +234,14 @@ def md_table(headers: list[str], rows: list[list[Any]], align: str = "") -> str:
 
 
 def _context_module():
-    try:
-        import importlib
-
-        return importlib.import_module("core_context")
-    except Exception:
-        return None
+    """拿 core_context 模块（main.py 只按全名注册，裸名永远导入不到）。"""
+    pkg = __package__ or "data.plugins.astrbot_plugin_dafeiyu_core"
+    for name in ("%s.core_context" % pkg, "core_context"):
+        try:
+            return importlib.import_module(name)
+        except Exception:
+            continue
+    return None
 
 
 async def build_model(plugin: Any, result: dict | None = None, top_context: int = 40,

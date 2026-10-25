@@ -32,7 +32,9 @@ DEFAULTS = {
     "fallback_baidu": True,
     "timeout_seconds": 20,
     "daily_limit": 80,               # 每日搜索总次数上限（0=不限）
+    "fetch_daily_limit": 80,         # 每日抓正文次数上限（0=不限，和搜索分开算）
     "cooldown_seconds": 6,           # 同一会话两次搜索最小间隔
+    "api_key": "",                   # 手填 DeepSeek key（留空才去用 provider 配置里的）
     "hint_enabled": True,            # 每轮注入「该搜就搜」提示
     "brand_hint": "",                # 额外追加给她的搜索提示（留空用内置）
 }
@@ -107,8 +109,13 @@ def _load_state(plugin) -> None:
 def _save_state() -> None:
     if _STATE_PATH is None:
         return
+    # 先写临时文件再 os.replace：避免进程被杀/磁盘满时留下截断的 JSON
     try:
-        _STATE_PATH.write_text(json.dumps(_STATE, ensure_ascii=False, indent=1), "utf-8")
+        _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(_STATE, ensure_ascii=False, indent=1)
+        tmp = _STATE_PATH.with_suffix(".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, _STATE_PATH)
     except Exception as exc:
         logger.warning("[dafeiyu_search] 保存搜索状态失败: %s", exc)
 
@@ -118,27 +125,52 @@ def _reset_day_if_needed() -> None:
     if str(_STATE.get("day") or "") != today:
         _STATE["day"] = today
         _STATE["count"] = 0
+        _STATE["count_fetch"] = 0
 
 
-def _rate_ok(umo: str) -> tuple[bool, str]:
-    """同会话冷却 + 每日上限。"""
+def _rate_ok(umo: str, kind: str = "search", record: bool = True) -> tuple[bool, str]:
+    """同会话冷却 + 每日上限。
+
+    record=True（默认，兼容 main.py 里的 /搜索 命令）：检查通过就立刻记账；
+    record=False（llm 工具走这个）：只检查，等真的拿到结果再 _record_use，免得失败也白扣额度。
+    """
     _reset_day_if_needed()
-    limit = _as_int(_RUNTIME.get("daily_limit"), 80)
-    if limit > 0 and _as_int(_STATE.get("count"), 0) >= limit:
-        return False, "今天搜得够多了"
+    if kind == "fetch":
+        limit = _as_int(_RUNTIME.get("fetch_daily_limit"), 80)
+        used = _as_int(_STATE.get("count_fetch"), 0)
+        over_msg = "今天抓网页抓得够多了"
+    else:
+        limit = _as_int(_RUNTIME.get("daily_limit"), 80)
+        used = _as_int(_STATE.get("count"), 0)
+        over_msg = "今天搜得够多了"
+    if limit > 0 and used >= limit:
+        return False, over_msg
     cooldown = _as_float(_RUNTIME.get("cooldown_seconds"), 6.0)
     last = _STATE.setdefault("last", {})
     now = time.time()
     if cooldown > 0 and umo and now - _as_float(last.get(umo), 0.0) < cooldown:
         return False, "刚搜过"
-    if umo:
-        last[umo] = now
-        if len(last) > 500:
-            for key in sorted(last, key=lambda k: _as_float(last.get(k), 0.0))[:-200]:
-                last.pop(key, None)
-    _STATE["count"] = _as_int(_STATE.get("count"), 0) + 1
-    _save_state()
+    if record:
+        _record_use(umo, kind)
     return True, ""
+
+
+def _record_use(umo: str, kind: str = "search") -> None:
+    """调用真的成功了才记账：刷新冷却时间 + 当日计数（失败不扣额度）。"""
+    try:
+        _reset_day_if_needed()
+        last = _STATE.setdefault("last", {})
+        now = time.time()
+        if umo:
+            last[umo] = now
+            if len(last) > 500:
+                for key in sorted(last, key=lambda k: _as_float(last.get(k), 0.0))[:-200]:
+                    last.pop(key, None)
+        key = "count_fetch" if kind == "fetch" else "count"
+        _STATE[key] = _as_int(_STATE.get(key), 0) + 1
+        _save_state()
+    except Exception as exc:
+        logger.warning("[dafeiyu_search] 记录搜索次数失败: %s", exc)
 
 
 def _config_dict(plugin) -> dict:
@@ -420,7 +452,7 @@ class SearchFeature:
         if not query:
             return "要搜什么？给个关键词。"
         umo = str(getattr(event, "unified_msg_origin", "") or "")
-        ok, reason = _rate_ok(umo)
+        ok, reason = _rate_ok(umo, record=False)
         if not ok:
             return f"{reason}，先按你知道的说；不确定就直说不确定，别编。"
         want = _as_int(count, 0)
@@ -436,6 +468,7 @@ class SearchFeature:
             logger.info("[dafeiyu_search] 没搜到：%s", query)
             return f"搜「{query}」没搜到东西，可能是网络或搜索服务的问题；先照你知道的答，不确定就说不确定。"
         logger.info("[dafeiyu_search] 搜索「%s」→ %s 条", query, len(results))
+        _record_use(umo)   # 拿到结果了才扣额度（没搜到/网络失败不扣）
         _remember_topic(query)
         return f"「{query}」的搜索结果：\n" + _format_results(results, want)
 
@@ -452,7 +485,7 @@ class SearchFeature:
         if not url.lower().startswith(("http://", "https://")):
             return "网址不对，要 http/https 开头的完整链接。"
         umo = str(getattr(event, "unified_msg_origin", "") or "")
-        ok, reason = _rate_ok(umo)
+        ok, reason = _rate_ok(umo, "fetch", record=False)   # 抓正文单独计数，不跟搜索吃同一份额度
         if not ok:
             return f"{reason}，先别抓了。"
         page = await _deepseek_fetch(self, url)
@@ -462,9 +495,11 @@ class SearchFeature:
             if bool(_RUNTIME.get("fallback_baidu", True)):
                 results = await _baidu_search(self, url, 3)
                 if results:
+                    _record_use(umo, "fetch")
                     return "直接抓正文没成功，这是搜索到的摘要：\n" + _format_results(results, 3)
             return "这个页面抓不到正文，可能是站点限制；换个来源或直接回答。"
         logger.info("[dafeiyu_search] 抓取 %s（%s 字）", url, len(content))
+        _record_use(umo, "fetch")   # 真抓到正文才扣额度
         clipped = content[:4000]
         head = f"《{title}》" if title else url
         return f"{head}\n（正文前 4000 字）\n{clipped}"

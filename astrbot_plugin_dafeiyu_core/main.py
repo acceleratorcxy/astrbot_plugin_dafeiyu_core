@@ -37,7 +37,7 @@ from astrbot.core.platform.astr_message_event import MessageSesion
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 PLUGIN_ID = "astrbot_plugin_dafeiyu_core"
-VERSION = "2.3.5"
+VERSION = "2.4.0"
 REPO = "https://github.com/acceleratorcxy/astrbot_plugin_dafeiyu_core"
 
 _DATA_ROOT = Path(get_astrbot_plugin_data_path())
@@ -75,7 +75,7 @@ core_backup = _load_sibling("core_backup")
 core_context = _load_sibling("core_context")
 core_page = _load_sibling("core_page")
 
-SECTIONS = ("owner", "group_wake", "humanizer", "interest", "meme", "search", "speaker", "cost", "sleep", "knowledge", "backup", "context_guard", "notify", "page")
+SECTIONS = ("owner", "group_wake", "humanizer", "interest", "meme", "search", "speaker", "cost", "sleep", "knowledge", "backup", "context_guard", "notify")
 
 DEFAULT_PRIVATE_UMOS: tuple = ()
 
@@ -181,23 +181,138 @@ TRIGGER_TEXT = """用法：/触发 <动作> [参数]
 
 
 
+# help 别名只认「整条消息就是这几个字」：「help me 看下这个报错」这种句子算普通聊天。
+HELP_ALIAS_WORDS = ("help", "帮助", "菜单", "指令", "命令")
+HELP_ALIAS_PUNCT = " \t\r\n\u3000,，。.！!？?~～、;；:：\"'“”‘’（）()【】[]《》<>…—-"
+HELP_WAKE_WORDS = ("大肥鱼", "肥鱼", "鲸鲸")
+
+# AstrBot 框架自带的内置指令：它们不属于本插件，会绕过 notify.command_platforms 白名单。
+BUILTIN_COMMANDS = (
+    "help", "reset", "new", "stop", "stats", "sid", "name", "provider",
+    "dashboard_update", "set", "unset",
+)
+
+# 内置指令被拦后的私聊提示节流（sender:platform -> 上次提示时间戳）
+_GUARD_NOTICE_AT: dict = {}
+
+
+def _coerce_bool(value, default: bool = True) -> bool:
+    """配置里可能是 True/False，也可能是页面传来的 "false"/"0"/"否" 这类字符串。"""
+    if value is None or value == "":
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in ("false", "0", "no", "off", "否", "关")
+    try:
+        return bool(value)
+    except Exception:
+        return default
+
+
+def _normalize_help_text(text: str) -> str:
+    """去掉唤醒前缀、@、空白和首尾标点后转小写，只留正文。"""
+    body = (text or "").strip()
+    for _ in range(3):
+        before = body
+        for prefix in ("/", "／", "!", "！", "@", "＠"):
+            if body.startswith(prefix):
+                body = body[len(prefix):].lstrip()
+                break
+        for wake in HELP_WAKE_WORDS:
+            if body.startswith(wake):
+                body = body[len(wake):].lstrip(" \t，,。.、:：")
+                break
+        body = body.strip(HELP_ALIAS_PUNCT)
+        if body == before:
+            break
+    return body.lower()
+
+
 class HelpAliasFilter(filter.CustomFilter):
     """把 /help 抢在 AstrBot 内置 help 前面处理。
 
     内置 help 是保留命令，会先回它自己的清单并把事件停掉，导致 /help 看不到我们的表。
+    只认「整条消息就是 help/帮助/菜单/指令/命令」：以前只看第一个词，
+    「help me 看下这个报错」也会被当指令吞掉（群里不吭声、私聊回「指令只给主人用」）。
     """
 
     def filter(self, event: AstrMessageEvent, cfg=None) -> bool:
         try:
-            text = (event.message_str or "").strip()
-            for prefix in ("/", "／"):
-                if text.startswith(prefix):
-                    text = text[len(prefix):].strip()
-                    break
-            if not text:
+            text = _normalize_help_text(getattr(event, "message_str", "") or "")
+            return bool(text) and text in HELP_ALIAS_WORDS
+        except Exception:
+            return False
+
+
+def _builtin_command_name(text: str) -> str:
+    """首词（去掉 / ！ 前缀后）精确等于内置指令名且后接空白或结束时，返回指令名。"""
+    body = (text or "").strip()
+    for prefix in ("/", "／", "！", "!"):
+        if body.startswith(prefix):
+            body = body[len(prefix):].lstrip()
+            break
+    if not body:
+        return ""
+    lowered = body.lower()
+    for name in BUILTIN_COMMANDS:
+        if lowered == name:
+            return name
+        if lowered.startswith(name) and body[len(name)] in " \t\r\n\u3000":
+            return name
+    return ""
+
+
+class CommandPlatformGuardFilter(filter.CustomFilter):
+    """把框架内置指令也纳入 notify.command_platforms 白名单。
+
+    内置指令（/help /reset /new ...）属于 AstrBot 核心，不走本插件的 _command_gate，
+    能绕过白名单在别的机器人上用。这里在唤醒阶段先认出来：平台不在白名单就吞掉事件。
+    filter 恒返回 False —— 只借 side effect（stop_event）停事件，本插件自己的指令不受影响。
+    """
+
+    plugin = None
+
+    def filter(self, event: AstrMessageEvent, cfg=None) -> bool:
+        try:
+            plugin = CommandPlatformGuardFilter.plugin
+            if plugin is None:
                 return False
-            first = text.split()[0].lower()
-            return first in ("help",)
+            # 和框架内置指令的判断保持一致：只有被唤醒 / at / 私聊的消息才可能是指令
+            if not bool(getattr(event, "is_at_or_wake_command", False)):
+                return False
+            name = _builtin_command_name(getattr(event, "message_str", "") or "")
+            if not name:
+                return False
+            allowed = plugin._command_platforms()
+            umo = str(getattr(event, "unified_msg_origin", "") or "")
+            platform = umo.split(":", 1)[0].strip()
+            if not allowed or "*" in allowed or platform in allowed:
+                return False
+            try:
+                logger.info(
+                    "[dafeiyu_core] 内置指令被平台限制拦下：/%s platform=%s umo=%s",
+                    name,
+                    platform,
+                    umo,
+                )
+            except Exception:
+                pass
+            try:
+                if plugin._is_master_event(event):
+                    key = f"{platform}:{event.get_sender_id()}"
+                    now = _dt.datetime.now().timestamp()
+                    if now - float(_GUARD_NOTICE_AT.get(key) or 0) >= 60:
+                        _GUARD_NOTICE_AT[key] = now
+                        coro = plugin.send_private_to_master(
+                            "指令得在官方机器人那边发，这边我只跟你聊天。", event
+                        )
+                        asyncio.get_running_loop().create_task(coro)
+            except Exception as exc:
+                logger.warning("[dafeiyu_core] 内置指令被拦后的私聊提示失败: %s", exc)
+            try:
+                event.stop_event()
+            except Exception:
+                pass
+            return False
         except Exception:
             return False
 
@@ -230,6 +345,11 @@ class Main(Star, owner_feature.OwnerFeature, group_wake_feature.GroupWakeFeature
         self._speaker_feature = speaker_feature
         self._sleep_feature = sleep_feature
         self._knowledge_feature = knowledge_feature
+        try:
+            # CommandPlatformGuardFilter 是框架实例化的（不带构造参数），这里挂一下插件引用
+            CommandPlatformGuardFilter.plugin = self
+        except Exception:
+            pass
         self._apply_all_runtime()
 
     # ---------------------------------------------------------------- config
@@ -265,6 +385,71 @@ class Main(Star, owner_feature.OwnerFeature, group_wake_feature.GroupWakeFeature
         sleep_feature._apply_runtime(self._section("sleep"))
         report_feature._apply_runtime(self._section("notify"))
         knowledge_feature._apply_runtime(self._section("knowledge"))
+        # 页面里改开关要马上生效：备份循环 / 群聊自动压缩只在 initialize() 时按当时配置启动过一次，
+        # 之后 config_save 只调到这里，所以补一次同步（没有循环在跑就跳过，不报错）。
+        try:
+            self._sync_backup_loop()
+        except Exception as exc:
+            logger.warning("[dafeiyu_core] 同步自动备份开关失败: %s", exc)
+        try:
+            self._sync_group_compress_loop()
+        except Exception as exc:
+            logger.warning("[dafeiyu_core] 同步群聊自动压缩开关失败: %s", exc)
+
+    def _run_maybe_awaitable(self, result, name: str) -> None:
+        """同步函数里调用 async 的 stop()：有 loop 就排进任务，没有就直接关掉协程。"""
+        if asyncio.iscoroutine(result):
+            try:
+                asyncio.get_running_loop().create_task(result)
+            except Exception:
+                try:
+                    result.close()
+                except Exception:
+                    pass
+                logger.warning("[dafeiyu_core] %s 没有运行中的事件循环，已跳过", name)
+
+    def _sync_backup_loop(self) -> None:
+        """按 backup.enabled 启动/停止自动备份循环；时间或份数改了要重启循环才生效。"""
+        backup = getattr(self, "_backup", None)
+        if backup is None:
+            return
+        cfg = self._section("backup")
+        enabled = _coerce_bool(cfg.get("enabled", True), True)
+        sig = (enabled, str(cfg.get("hour")), str(cfg.get("minute")), str(cfg.get("keep")))
+        prev = getattr(self, "_backup_sig", None)
+        self._backup_sig = sig
+        if not enabled:
+            self._run_maybe_awaitable(backup.stop(), "停止自动备份")
+            return
+        if prev is not None and prev != sig:
+            async def _restart() -> None:
+                try:
+                    await backup.stop()
+                except Exception:
+                    pass
+                backup.start()
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_restart())
+                logger.info("[dafeiyu_core] 备份配置有改动，已重启自动备份循环")
+            except Exception:
+                backup.start()
+            return
+        backup.start()
+
+    def _sync_group_compress_loop(self) -> None:
+        """按 context_guard.enabled + group_auto_compress 启动/停止群聊自动压缩循环。"""
+        guard = getattr(self, "_guard", None)
+        if guard is None:
+            return
+        cfg = self._section("context_guard")
+        enabled = _coerce_bool(cfg.get("enabled", True), True) and _coerce_bool(
+            cfg.get("group_auto_compress", True), True
+        )
+        if enabled:
+            guard.start_background()
+        else:
+            self._run_maybe_awaitable(guard.stop_background(), "停止群聊自动压缩")
 
     def _cfg(self, key: str, default=None):
         """humanizer_feature 会调用 self._cfg，这里改成读 humanizer 分段。"""
@@ -762,7 +947,15 @@ class Main(Star, owner_feature.OwnerFeature, group_wake_feature.GroupWakeFeature
         return {str(x).strip() for x in items if str(x).strip()}
 
     def _is_master_event(self, event) -> bool:
-        """这条消息是不是主人发的。关掉「只允许主人」就谁都可以。"""
+        """这条消息是不是主人发的。关掉「只允许主人」就谁都可以。
+
+        私聊和群聊都认：owner.master_ids（含平台 openid）+ 群聊额外成员 ID
+        同「群聊也认的主人 ID」（command_group_master_ids）+ 全局 admins_id。
+        不只看 event.is_admin()：qq_official 等平台的 event.role 不一定是 admin。
+        """
+        # 注意：4.29.0 里 event.is_admin() 基本恒为 False（框架只在 webchat/apikey 场景给 role 赋值），
+        # 所以它不是权限旁路。另外这一句在 command_master_only 之前：真被框架赋了 admin，
+        # 就会早于「只允许主人」直接放行 —— 行为保持原样，这里只补注释，不改逻辑。
         try:
             if bool(event.is_admin()):
                 return True
@@ -771,13 +964,24 @@ class Main(Star, owner_feature.OwnerFeature, group_wake_feature.GroupWakeFeature
         if not self._command_master_only():
             return True
         try:
-            if not event.get_group_id():
-                return False
-            sender = str(event.get_sender_id())
+            sender = str(event.get_sender_id() or "")
         except Exception:
+            sender = ""
+        if not sender:
             return False
-        return sender in self._command_group_master_ids()
-
+        ids = set(self._command_group_master_ids())
+        try:
+            items = self._section("owner").get("master_ids") or []
+            if isinstance(items, str):
+                items = items.replace("，", ",").split(",")
+            ids |= {str(x).strip() for x in items if str(x).strip()}
+        except Exception:
+            pass
+        try:
+            ids |= {str(x) for x in (self.context.astrbot_config.get("admins_id") or [])}
+        except Exception:
+            pass
+        return sender in ids
     def _command_gate(self, event) -> tuple[bool, str]:
         """(能不能用指令, 不能用的原因: platform/channel/master)。"""
         umo = str(getattr(event, "unified_msg_origin", "") or "")
@@ -807,6 +1011,16 @@ class Main(Star, owner_feature.OwnerFeature, group_wake_feature.GroupWakeFeature
         """指令不在这里执行：群里不吭声，私聊提示一句。"""
         try:
             event.should_call_llm(True)
+        except Exception:
+            pass
+        try:
+            logger.info(
+                "[dafeiyu_core] 指令被拒（%s）：umo=%s sender=%s role=%s",
+                reason,
+                getattr(event, "unified_msg_origin", ""),
+                event.get_sender_id(),
+                getattr(event, "role", ""),
+            )
         except Exception:
             pass
         texts = {
@@ -1144,6 +1358,11 @@ class Main(Star, owner_feature.OwnerFeature, group_wake_feature.GroupWakeFeature
         if is_private:
             return [event.plain_result(help_plain())]
         return await self.answer_private(event, help_plain(), hint="命令清单私聊发你了。")
+
+    @filter.custom_filter(CommandPlatformGuardFilter, False, priority=500)
+    async def command_platform_guard(self, event: AstrMessageEvent):
+        """只为挂 CommandPlatformGuardFilter：判断和吞事件都在 filter 里，这里永远不会被调用到。"""
+        return
 
     @filter.custom_filter(HelpAliasFilter, False, priority=1000)
     async def help_early(self, event: AstrMessageEvent):

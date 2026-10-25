@@ -16,9 +16,11 @@
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -68,6 +70,7 @@ DEFAULTS = {
     'image_caption_prompt': '用一句中文说清这张图/表情包的内容（有文字就把文字也写出来），不超过60字。',
     'image_caption_max': 3,
     'image_caption_ttl_minutes': 1440,
+    'caption_timeout_seconds': 120,
     'image_direct_enabled': True,
     'image_direct_max': 3,
     'sticker_label_enabled': True,
@@ -107,8 +110,24 @@ _EXTRA_RECORDED = 'dafeiyu_speaker_recorded'
 _LOG: dict[str, list[dict[str, Any]]] = {}
 _STATE_PATH: Path | None = None
 _LAST_SAVE = 0.0
-# 群里别人的图片引用（常是 base64://）只在内存里留最近这点，太长的丢掉，免得吃内存/撑爆记录文件
-_REF_MAX_CHARS = 600_000
+# 群里别人的图片引用（常是 base64://）只在内存里留最近这点；base64/超长的直接换成占位，
+# 这类引用不进 'i'、也不喂模型（看不了图），免得吃内存/撑爆记录文件
+_REF_MAX_CHARS = 4000
+# 看不了图的引用统一换成这个占位：'i'/'q'/'sn' 三个数组靠下标对齐，整条删掉会错位
+_REF_PLACEHOLDER = 'base64'
+
+
+def _usable_ref(ref) -> str:
+    """一条图片引用值不值得留：base64:// / data: / 超长的换成占位（不保存、不喂模型）。"""
+    value = str(ref or '').strip()
+    if not value:
+        return ''
+    head = value[:32].lower()
+    if head.startswith('base64://') or head.startswith('data:'):
+        return _REF_PLACEHOLDER
+    if len(value) > _REF_MAX_CHARS:
+        return _REF_PLACEHOLDER
+    return value
 
 
 def _now() -> float:
@@ -151,6 +170,7 @@ def _apply_runtime(config) -> None:
             'master_context_short_chars',
             'context_short_chars',
             'context_question_chars',
+            'caption_timeout_seconds',
             'fresh_lines',
             'fresh_minutes',
         ):
@@ -275,7 +295,12 @@ def record(event: AstrMessageEvent, text: str | None = None) -> None:
                     faces = media_kind.face_names(event)
             else:
                 raw_infos = [{'ref': ref, 'kind': 'photo', 'name': ''} for ref in _image_refs(event)]
-            raw_infos = [info for info in raw_infos if len(str(info.get('ref') or '')) <= _REF_MAX_CHARS]
+        # base64:// / data: / 超长的引用换成占位（内容不留、也不喂模型）；保留条目是为了 'q'/'sn' 下标对齐
+        raw_infos = [
+            dict(info, ref=_usable_ref(info.get('ref')))
+            for info in raw_infos
+            if isinstance(info, dict)
+        ]
         label = ''
         if media_kind is not None and (raw_infos or faces):
             label = media_kind.compose_label(
@@ -298,17 +323,22 @@ def record(event: AstrMessageEvent, text: str | None = None) -> None:
         sid = _sender_id(event)
         name = _sender_name(event) or ('主人' if _is_master(event) else '群友')
         max_chars = _as_int(_RUNTIME.get('max_chars'), 40)
+        # 干净原文（只有文字，不拼 [图片]/[表情包] 标签），用来认「本轮这条」，见 digest_block
+        raw_text = body.replace('\n', ' ').strip()[:max_chars]
         if label and body != label:
             room = max(5, max_chars - len(label) - 1)
             body = (body.replace('\n', ' ').strip()[:room] + ' ' + label).strip()
         else:
-            body = body.replace('\n', ' ').strip()[:max_chars]
+            body = raw_text
         now = _now()
         bucket = int(now // 30)
         items = _LOG.setdefault(umo, [])
+        sid_tail = sid[-6:] if sid else ''
         for entry in reversed(items[-6:]):
+            # 注意：'s' 里存的是 tail，跟完整 sid 比永远不相等（原来这条去重形同虚设，
+            # filter 和 on_llm_request 各记一次，同一条消息会重复进上下文）
             if (
-                entry.get('s') == sid
+                entry.get('s') == sid_tail
                 and entry.get('x') == body
                 and int((entry.get('t') or 0) // 30) == bucket
             ):
@@ -320,6 +350,7 @@ def record(event: AstrMessageEvent, text: str | None = None) -> None:
             'm': 1 if _is_master(event) else 0,
             'g': 1 if is_group else 0,
             'x': body,
+            'rx': raw_text,
             'i': [str(info.get('ref') or '') for info in raw_infos],
             'q': [str(info.get('kind') or 'photo') for info in raw_infos],
             'sn': [str(info.get('name') or '') for info in raw_infos],
@@ -355,7 +386,10 @@ def _line_of(entry: dict[str, Any]) -> str:
     return '- %s %s（群友）：%s' % (stamp, name, body)
 
 
-_CAPTION_CACHE: dict[str, tuple[float, str]] = {}
+# 图片描述缓存：键是 md5(引用)。局限：引用常带一次性 token/query，同一张图换条 URL 会重复识别一次；
+# 缓存只靠 TTL + 容量上限兜住内存（进程内，重启即清空）。
+_CAPTION_CACHE: 'OrderedDict[str, tuple[float, str]]' = OrderedDict()
+_CAPTION_CACHE_MAX = 300
 
 
 def _image_refs(event: AstrMessageEvent) -> list[str]:
@@ -380,10 +414,16 @@ def _image_refs(event: AstrMessageEvent) -> list[str]:
 async def _caption_image(plugin, umo: str, ref: str) -> str:
     """让视觉模型看一眼这张图/表情，返回一句描述（带缓存）。"""
     ttl = _as_int(_RUNTIME.get('image_caption_ttl_minutes'), 1440) * 60
-    key = hashlib.md5(ref.encode('utf-8', 'ignore')).hexdigest()
+    key = hashlib.md5(str(ref).encode('utf-8', 'ignore')).hexdigest()
     hit = _CAPTION_CACHE.get(key)
     if hit and _now() - hit[0] < ttl:
+        try:
+            _CAPTION_CACHE.move_to_end(key)  # 命中也算「最近用过」，淘汰时先丢最久没用的
+        except Exception:
+            pass
         return hit[1]
+    if hit:
+        _CAPTION_CACHE.pop(key, None)  # 过期了立刻丢掉，别一直占着位置
     provider = None
     pid = str(_RUNTIME.get('image_caption_provider_id') or '').strip()
     try:
@@ -397,15 +437,33 @@ async def _caption_image(plugin, umo: str, ref: str) -> str:
     if provider is None:
         return ''
     prompt = str(_RUNTIME.get('image_caption_prompt') or '').strip() or '用一句中文说清这张图的内容。'
+    timeout = max(1, _as_int(_RUNTIME.get('caption_timeout_seconds'), 120))
     try:
-        resp = await provider.text_chat(prompt=prompt, image_urls=[ref])
+        # 这段是在 on_llm_request 里同步 await 的，慢模型/限流会把回复拖死，必须加超时
+        resp = await asyncio.wait_for(
+            provider.text_chat(prompt=prompt, image_urls=[ref]),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.info('[dafeiyu_speaker] 图片描述超时（%ss），当看不了图', timeout)
+        return ''
     except Exception as exc:
         logger.info('[dafeiyu_speaker] 图片没看懂: %s', exc)
         return ''
     text = str(getattr(resp, 'completion_text', '') or '').strip()
     text = ' '.join(text.split())[:120]
     if text:
-        _CAPTION_CACHE[key] = (_now(), text)
+        now = _now()
+        try:
+            # 写入前先清掉所有过期项（原来只增不删），再按容量上限丢最久没用的
+            for old_key in [k for k, v in _CAPTION_CACHE.items() if now - v[0] >= ttl]:
+                _CAPTION_CACHE.pop(old_key, None)
+            _CAPTION_CACHE[key] = (now, text)
+            _CAPTION_CACHE.move_to_end(key)
+            while len(_CAPTION_CACHE) > _CAPTION_CACHE_MAX:
+                _CAPTION_CACHE.popitem(last=False)
+        except Exception as exc:
+            logger.debug('[dafeiyu_speaker] 图片描述缓存写入失败: %s', exc)
     return text
 
 
@@ -450,6 +508,10 @@ async def _entry_line(plugin, umo: str, entry: dict[str, Any], budget: list[int]
         # 收藏表情包有名字就只按名字理解，不占图片额度（省 token，也免得她当照片解说）
         return _kind_at(index) == 'sticker' and not sticker_direct and bool(_name_at(index))
 
+    def _viewable(ref: str) -> bool:
+        # 占位（base64:// / data: / 超长引用）拿不到图：不传给 provider，也不占图片额度
+        return bool(ref) and ref != _REF_PLACEHOLDER
+
     if direct_refs is not None:
         if not _RUNTIME.get('image_direct_enabled', True):
             return line
@@ -457,7 +519,7 @@ async def _entry_line(plugin, umo: str, entry: dict[str, Any], budget: list[int]
         for index, ref in enumerate(refs[:2]):
             if budget[0] <= 0:
                 break
-            if _skip(index):
+            if _skip(index) or not _viewable(str(ref)):
                 continue
             budget[0] -= 1
             direct_refs.append(str(ref))
@@ -471,7 +533,7 @@ async def _entry_line(plugin, umo: str, entry: dict[str, Any], budget: list[int]
     for index, ref in enumerate(refs[:2]):
         if budget[0] <= 0:
             break
-        if _skip(index):
+        if _skip(index) or not _viewable(str(ref)):
             continue
         budget[0] -= 1
         cap = await _caption_image(plugin, umo, str(ref))
@@ -579,12 +641,19 @@ async def digest_block(event: AstrMessageEvent, plugin) -> tuple[str, list[str]]
         max_lines = _as_int(_RUNTIME.get('max_lines'), 8)
         sid = _sender_id(event)
         current = (event.message_str or '').strip().replace('\n', ' ')[: _as_int(_RUNTIME.get('max_chars'), 40)]
+        sid_tail = sid[-6:] if sid else ''
         picked: list[dict[str, Any]] = []
         for entry in reversed(items):
             if now - float(entry.get('t') or 0) > window:
                 continue
-            if entry.get('s') == (sid[-6:] if sid else '') and (entry.get('x') or '') == current and not picked:
-                continue  # 跳过本轮这条
+            if entry.get('s') == sid_tail and not picked:
+                # 跳过本轮这条：跟干净的原始文本 'rx' 比（'x' 里拼了 [图片]/[表情包] 标签，
+                # 这条带图/表情/换行时永远对不上，本轮这条就漏进来了）；老条目没有 'rx' 回落到 'x'
+                raw = entry.get('rx')
+                if raw is None:
+                    raw = entry.get('x') or ''
+                if str(raw).strip() == current:
+                    continue
             picked.append(entry)
             if len(picked) >= max_lines:
                 break
@@ -731,12 +800,12 @@ class SpeakerRecordFilter(CustomFilter):
 
 class SpeakerFeature:
 
+    # 注意：这个装饰器是 SpeakerRecordFilter 唯一的注册入口（waking_check 阶段会调用 filter，
+    # 返回 False 就跳过本 handler），所以不能删；下面的 handler 体永远是死代码，
+    # 记录只走 filter 这一条路径。
     @filter.custom_filter(SpeakerRecordFilter, False)
     async def track_speaker(self, event: AstrMessageEvent):
-        try:
-            record(event)
-        except Exception as exc:
-            logger.debug('[dafeiyu_speaker] 记录发言失败: %s', exc)
+        pass
 
     @filter.on_llm_request(priority=5045)
     async def inject_speaker_digest(self, event: AstrMessageEvent, req):

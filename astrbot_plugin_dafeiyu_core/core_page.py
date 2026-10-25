@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from astrbot.api import logger
@@ -17,7 +18,12 @@ from astrbot.api.web import file_response, request
 
 PLUGIN_ID = "astrbot_plugin_dafeiyu_core"
 
-SECTIONS = ("owner", "group_wake", "humanizer", "interest", "meme", "search", "speaker", "cost", "sleep", "knowledge", "backup", "context_guard", "notify", "page")
+# 备份文件名的固定格式（core_backup 生成，下载时只认这个）
+BACKUP_NAME_RE = re.compile(r"^dafeiyu-backup-\d{8}-\d{6}\.json$")
+# 导入备份的大小上限：备份是全量 JSON，正常几 MB，太大的直接拒掉，避免一次性读爆内存
+BACKUP_IMPORT_MAX_BYTES = 20 * 1024 * 1024
+
+SECTIONS = ("owner", "group_wake", "humanizer", "interest", "meme", "search", "speaker", "cost", "sleep", "knowledge", "backup", "context_guard", "notify")
 
 SECTION_TITLES = {
     "owner": "主人身份与听令",
@@ -33,7 +39,6 @@ SECTION_TITLES = {
     "backup": "全量资料备份",
     "context_guard": "上下文守护",
     "notify": "主人私聊通知",
-    "page": "页面",
 }
 
 
@@ -78,6 +83,130 @@ async def _json_body() -> dict:
     except Exception:
         body = {}
     return body if isinstance(body, dict) else {}
+
+
+# ------------------------------------------------------------ 配置值类型校验
+# 页面把输入框里的东西原样 POST 过来（"5" "false" "1.5"），直接落盘会让下游
+# int()/float() 抛 ValueError（备份循环、压缩循环），或者 bool("false") == True。
+_FIELD_SCHEMA: dict | None = None
+
+_BOOL_TRUE = ("true", "1", "yes", "y", "on", "是", "开", "真")
+_BOOL_FALSE = ("false", "0", "no", "n", "off", "否", "关", "假")
+
+
+def _section_fields() -> dict:
+    """读 _conf_schema.json 里每个分段的字段定义（原始 dict：type / default / items）。"""
+    global _FIELD_SCHEMA
+    if _FIELD_SCHEMA is not None:
+        return _FIELD_SCHEMA
+    fields: dict = {}
+    try:
+        data = json.loads(Path(__file__).with_name("_conf_schema.json").read_text(encoding="utf-8-sig"))
+        for section, sec in data.items():
+            if not isinstance(sec, dict):
+                continue
+            items = sec.get("items") or {}
+            if isinstance(items, dict):
+                fields[section] = {k: v for k, v in items.items() if isinstance(v, dict)}
+    except Exception as exc:
+        logger.warning("[dafeiyu_core] 读取配置字段定义失败: %s", exc)
+    _FIELD_SCHEMA = fields
+    return fields
+
+
+def _coerce_bool_value(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in _BOOL_TRUE:
+        return True
+    if text in _BOOL_FALSE:
+        return False
+    raise ValueError("不是开关（true/false）")
+
+
+def _coerce_number(value, as_int: bool):
+    if isinstance(value, bool):
+        raise ValueError("不是数字")
+    if isinstance(value, str):
+        value = value.strip().replace(",", "")
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")):
+        raise ValueError("不是有限数字")
+    return int(number) if as_int else number
+
+
+def _clamp_float(value: float, default, name: str = "") -> float:
+    """按 schema 默认值判断量纲：默认值 ≤1 当比例（0~1），≤100 当百分数（0~100）。"""
+    try:
+        base = float(default)
+    except (TypeError, ValueError):
+        base = 0.0
+    if base <= 1.0:
+        return max(0.0, min(1.0, value))
+    if base <= 100.0:
+        return max(0.0, min(100.0, value))
+    return max(0.0, value)
+
+
+def _clamp_int(value: int, default, name: str = "") -> int:
+    """整数兜底：钟点按 0~23（-1 表示关），分钟 0~59，其余不允许离谱的巨大值。"""
+    if name == "hour" or name.endswith("_hour"):
+        return max(-1, min(23, value))
+    if name == "minute" or name.endswith("_minute") or name.endswith("_minutes"):
+        # 注意 "wake_jitter_minutes" 这类是"多少分钟"而不是"分钟数"，不能被钳到 0~59
+        if name.endswith("_minutes") and name != "minute":
+            pass
+        else:
+            return max(0, min(59, value))
+    try:
+        base = int(default)
+    except (TypeError, ValueError):
+        base = 0
+    low = base if base < 0 else 0
+    high = max(abs(base) * 100, 1000)
+    return max(low, min(high, value))
+
+
+def _coerce_list_value(value, options=None) -> list:
+    if isinstance(value, str):
+        items = [x.strip() for x in value.replace("，", ",").split(",")]
+    elif isinstance(value, (list, tuple)):
+        items = [str(x).strip() for x in value]
+    else:
+        raise ValueError("要列表或逗号分隔的字符串")
+    items = [x for x in items if x]
+    if isinstance(options, list) and options:
+        allowed = {str(x) for x in options}
+        bad = [x for x in items if x not in allowed]
+        if bad:
+            raise ValueError("不在可选范围：" + "、".join(bad[:3]))
+    return items
+
+
+def _coerce_field(value, spec: dict, name: str = ""):
+    """按 schema 把一个值转成正确类型；转不了 raise ValueError（中文原因）。"""
+    ftype = str(spec.get("type") or "string").strip().lower()
+    default = spec.get("default")
+    if ftype == "bool":
+        return _coerce_bool_value(value)
+    if ftype == "int":
+        return _clamp_int(_coerce_number(value, True), default, name)
+    if ftype == "float":
+        return _clamp_float(_coerce_number(value, False), default, name)
+    if ftype == "list":
+        return _coerce_list_value(value, spec.get("items"))
+    if ftype == "object":
+        if isinstance(value, dict):
+            return value
+        raise ValueError("要一个对象")
+    if ftype in ("string", "text"):
+        if isinstance(value, (dict, list)):
+            raise ValueError("要文本")
+        return str(value)
+    return value
 
 
 def _personas_brief(personas) -> list[dict]:
@@ -230,7 +359,10 @@ def register_page_apis(plugin) -> None:
         aliases = body.get("aliases") or ""
         if isinstance(aliases, list):
             aliases = ",".join(map(str, aliases))
-        affinity = float(body.get("affinity") or 0.7)
+        try:
+            affinity = max(0.0, min(1.0, float(body.get("affinity") or 0.7)))
+        except Exception:
+            return {"status": "error", "message": "亲密度要 0~1 的数字"}
         store = plugin._interest_store
         if store is None:
             return {"status": "error", "message": "兴趣库没准备好"}
@@ -405,17 +537,36 @@ def register_page_apis(plugin) -> None:
 
     async def backup_create():
         if plugin._backup is None:
-            return {"status": "error", "message": "备份模块没准备好"}
-        result = await plugin._backup.create(reason="page")
-        return {"status": "ok", "message": f"已备份 {result.get('filename')}", "data": result}
+            return {"status": "error", "ok": False, "message": "备份模块没准备好"}
+        try:
+            result = await plugin._backup.create(reason="page")
+        except Exception as exc:
+            logger.warning("[dafeiyu_core] 页面立即备份失败: %s", exc)
+            return {"status": "error", "ok": False, "message": f"备份失败：{exc}"}
+        if not isinstance(result, dict):
+            return {"status": "error", "ok": False, "message": "备份返回结果不对"}
+        return {
+            "status": "ok",
+            "ok": True,
+            "message": f"已备份 {result.get('filename')}",
+            "data": result,
+        }
 
     async def backup_restore():
         body = await _json_body()
         filename = str(body.get("filename") or "").strip()
         if plugin._backup is None or not filename:
-            return {"status": "error", "message": "参数不对"}
-        result = await plugin._backup.restore_file(filename)
-        return {"status": "ok", "message": "已恢复", "data": result}
+            return {"status": "error", "ok": False, "message": "参数不对"}
+        try:
+            result = await plugin._backup.restore_file(filename)
+        except Exception as exc:
+            logger.warning("[dafeiyu_core] 页面恢复备份失败: %s", exc)
+            return {"status": "error", "ok": False, "message": f"恢复失败：{exc}"}
+        # core_backup.restore_file 现在返回 dict（含 ok/error），失败时按错误返回
+        if isinstance(result, dict) and result.get("ok") is False:
+            reason = result.get("error") or result.get("message") or "恢复失败"
+            return {"status": "error", "ok": False, "message": str(reason), "data": result}
+        return {"status": "ok", "ok": True, "message": "已恢复", "data": result}
 
     async def backup_delete():
         body = await _json_body()
@@ -429,7 +580,10 @@ def register_page_apis(plugin) -> None:
         filename = (request.query.get("filename") or "").strip()
         if plugin._backup is None or not filename:
             return {"status": "error", "message": "参数不对"}
-        path = plugin._backup.dir / Path(filename).name
+        # 只认 core_backup 生成的文件名（dafeiyu-backup-YYYYmmdd-HHMMSS.json），顺便挡住路径穿越
+        if not BACKUP_NAME_RE.match(filename):
+            return {"status": "error", "message": "文件名不对"}
+        path = plugin._backup.dir / filename
         if not path.exists():
             return {"status": "error", "message": "没找到这个备份"}
         return file_response(path, filename=path.name, content_type="application/json")
@@ -439,18 +593,45 @@ def register_page_apis(plugin) -> None:
         upload = files.get("file") if files else None
         if upload is None:
             return {"status": "error", "message": "没收到文件"}
-        raw = await upload.read()
+        try:
+            size = int(getattr(upload, "content_length", 0) or 0)
+        except Exception:
+            size = 0
+        if size > BACKUP_IMPORT_MAX_BYTES:
+            return {
+                "status": "error",
+                "message": f"备份文件太大了（上限 {BACKUP_IMPORT_MAX_BYTES // (1024 * 1024)}MB）",
+            }
+        try:
+            raw = await upload.read()
+        except Exception as exc:
+            logger.warning("[dafeiyu_core] 读取导入备份失败: %s", exc)
+            return {"status": "error", "message": f"读文件失败：{exc}"}
+        if len(raw) > BACKUP_IMPORT_MAX_BYTES:
+            return {
+                "status": "error",
+                "message": f"备份文件太大了（上限 {BACKUP_IMPORT_MAX_BYTES // (1024 * 1024)}MB）",
+            }
         try:
             data = json.loads(raw.decode("utf-8"))
         except Exception:
             return {"status": "error", "message": "文件不是合法 JSON"}
+        # 结构校验：只认本插件导出的备份（顶层必须有 schema 或 version），不合格不进 restore
+        if not isinstance(data, dict):
+            return {"status": "error", "message": "备份文件格式不对：不是 JSON 对象"}
+        if "schema" not in data and "version" not in data:
+            return {"status": "error", "message": "备份文件格式不对：缺少 schema/version 字段"}
         if plugin._backup is None:
             return {"status": "error", "message": "备份模块没准备好"}
         try:
             result = await plugin._backup.restore(data)
         except Exception as exc:
-            return {"status": "error", "message": f"导入失败：{exc}"}
-        return {"status": "ok", "message": "导入完成", "data": result}
+            return {"status": "error", "ok": False, "message": f"导入失败：{exc}"}
+        # restore() 现在返回 dict（含 ok/error），失败时别报成功
+        if isinstance(result, dict) and result.get("ok") is False:
+            reason = result.get("error") or result.get("message") or "导入失败"
+            return {"status": "error", "ok": False, "message": str(reason), "data": result}
+        return {"status": "ok", "ok": True, "message": "导入完成", "data": result}
 
     ctx.register_web_api(f"{p}/backups", backup_list, ["GET"], "备份列表")
     ctx.register_web_api(f"{p}/backup/create", backup_create, ["POST"], "立即备份")
@@ -475,9 +656,44 @@ def register_page_apis(plugin) -> None:
         section = str(body.get("section") or "").strip()
         values = body.get("values")
         if section not in SECTIONS or not isinstance(values, dict):
-            return {"status": "error", "message": "section 或 values 不对"}
-        plugin._set_section(section, values)
-        return {"status": "ok", "message": f"已保存 {SECTION_TITLES.get(section, section)} 配置"}
+            return {"status": "error", "ok": False, "message": "section 或 values 不对"}
+        fields = _section_fields().get(section) or {}
+        if not fields:
+            return {
+                "status": "error",
+                "ok": False,
+                "message": f"没找到 {SECTION_TITLES.get(section, section)} 的字段定义（_conf_schema.json）",
+            }
+        cleaned: dict = {}
+        rejected: list = []
+        # 先全部校验/转换，都处理完再一次性落盘，免得写一半
+        for key, value in values.items():
+            spec = fields.get(str(key))
+            if spec is None:
+                rejected.append({"key": str(key), "reason": "unknown"})
+                continue
+            try:
+                cleaned[str(key)] = _coerce_field(value, spec, str(key))
+            except Exception as exc:
+                rejected.append({"key": str(key), "reason": str(exc)})
+        if not cleaned:
+            names = "、".join(item["key"] for item in rejected[:5]) or "？"
+            return {
+                "status": "error",
+                "ok": False,
+                "message": f"没有能保存的字段（{names}）",
+                "rejected": rejected,
+            }
+        try:
+            plugin._set_section(section, cleaned)
+        except Exception as exc:
+            logger.warning("[dafeiyu_core] 保存页面配置失败: %s", exc)
+            return {"status": "error", "ok": False, "message": f"保存失败：{exc}", "rejected": rejected}
+        message = f"已保存 {SECTION_TITLES.get(section, section)} 配置"
+        if rejected:
+            names = "、".join(item["key"] for item in rejected[:5])
+            message += f"；{len(rejected)} 项没写入（{names}）"
+        return {"status": "ok", "ok": True, "message": message, "rejected": rejected}
 
     ctx.register_web_api(f"{p}/config", config_get, ["GET"], "读取插件配置")
     ctx.register_web_api(f"{p}/config/save", config_save, ["POST"], "保存插件配置")
@@ -539,10 +755,6 @@ def register_page_apis(plugin) -> None:
             status["knowledge"] = {}
         return {"status": "ok", "data": status}
 
-    async def context_compress():
-        return {"status": "error", "message": "压缩需要在聊天里由主人发 /压缩（页面没有会话上下文）"}
-
     ctx.register_web_api(f"{p}/context", context_status, ["GET"], "上下文用量")
-    ctx.register_web_api(f"{p}/context/compress", context_compress, ["POST"], "压缩上下文")
 
     logger.info("[dafeiyu_core] 页面接口已注册：%s/*", p)

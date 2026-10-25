@@ -90,11 +90,11 @@ def _is_master(event: AstrMessageEvent) -> bool:
     except Exception:
         platform = ''
     if platform in ('webchat', 'webchat_live'):
+        # webchat 的 session_id 是 webchat!{用户名}!{会话id}，sender_id 就是登录用户名，
+        # 上面按 sender_id / sender_name 精确比对已经够用；
+        # 不能在 umo 里按子串找 master_id：用户名只是「包含」主人名字的普通用户会被误判成主人。
         name = _sender_name(event)
         if name and name in ids:
-            return True
-        umo = getattr(event, 'unified_msg_origin', '') or ''
-        if any((str(i) in umo for i in ids if i)):
             return True
     return False
 

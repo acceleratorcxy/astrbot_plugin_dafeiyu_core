@@ -263,17 +263,27 @@ def _kind_of_segment(seg: dict) -> tuple[str, str]:
 
 
 def image_infos(event) -> list[dict]:
-    """这条消息里的图片：按组件顺序返回 [{'ref','kind','name'}]。"""
+    """这条消息里的图片：按组件顺序返回 [{'ref','kind','name'}]。
+
+    组件下标和原始 image 段下标不一定一一对应：适配器会跳过 mface / 解析失败的段，
+    也可能一个段拆成多个组件，这时两边数量不一致，按下标硬套会把表情包名字标到别的图上。
+    所以数量对不上时只按顺序配对到较短的那一侧，多出来的图片没有可信的段可对，
+    给保守值 kind='sticker'、name=''（宁可少解说，也别把真照片当表情包或反过来）。
+    """
     infos: list[dict] = []
     comps = _component_images(event)
     segs = [seg for seg in _raw_segments(event) if str(seg.get('type') or '') == 'image']
+    paired = min(len(comps), len(segs))
     for index, comp in enumerate(comps):
         ref = _ref_of(comp)
         if not ref:
             continue
         kind, name = ('photo', '')
-        if index < len(segs):
+        if index < paired:
             kind, name = _kind_of_segment(segs[index])
+        elif segs:
+            # 段数是有的、只是数量对不上（多出来的组件）→ 保守当表情包
+            kind, name = ('sticker', '')
         infos.append({'ref': ref, 'kind': kind, 'name': name})
     return infos
 

@@ -6,7 +6,7 @@ AstrBot 在群聊里默认只会被 @、被引用、或以唤醒词（默认 "/"
 1. 关键词唤醒：群消息里提到「大肥鱼 / 肥鱼 / 鲸 / 鱼鱼」等关键词时，当作在叫她；
 2. 随机搭话：不相关的群消息按一个很低的概率随机回一句，像真人在群里偶尔插句话。
    带同群冷却时间，避免刷屏、避免 token 乱烧；
-3. 续聊（engaged）：她在群里回过一句后，会继续盯这个群一小段时间（默认 180 秒）。
+3. 续聊（engaged）：她在群里回过一句后，会继续盯这个群一小段时间（默认 240 秒）。
    期间每来一条新消息，先算「这条跟她刚才聊的有没有关系」（叫名字 / 接着她的话 /
    兴趣相关 / 问句 / 接茬 / 指代），相关度够且掷中概率（默认 80% × 相关度）就再回一句；
    连着两条跟她无关、群里没人说话（默认 120 秒）或连续接话到上限（默认 6 句）就退出续聊，
@@ -91,6 +91,14 @@ _RECENT_USER: dict[str, list[dict[str, Any]]] = {}
 _ACTIVITY: dict[str, list[float]] = {}
 _MY_REPLIES: dict[str, list[float]] = {}   # umo -> 她最近在这个群发言的时间戳
 _RETORT_UNTIL: dict[str, float] = {}       # 群 -> 被嫌弃后安静到什么时候
+# 上面这些字典按群 key 只增不删：每 _STORE_CLEANUP_INTERVAL 秒顺手扫一遍，
+# 扔掉超过 _STORE_TTL_SECONDS 没更新的群，单个字典超过 _STORE_MAX_KEYS 时再删最旧的。
+_STORE_CLEANUP_INTERVAL = 600.0
+_STORE_TTL_SECONDS = 7 * 86400.0
+_STORE_MAX_KEYS = 500
+_last_store_cleanup = 0.0
+# 活跃度明细（每条消息一个时间戳）最多保留一小时，防止有人把统计窗口配得特别大
+_ACTIVITY_KEEP_MAX = 3600.0
 # 群友明说她插嘴 / 自作多情时用的话术（命中就闭嘴一阵子，别再顶上去招人烦）
 _RETORT_WORDS = (
     '没跟你说话', '没在说你', '没说你', '别插嘴', '别乱插', '不用艾特', '不用@',
@@ -311,8 +319,102 @@ def _push_user_text(umo: str, text: str) -> None:
         pass
 
 
+def _store_stamp(value) -> float:
+    """从状态字典里存的值估一个「最后更新时间」，用来决定能不能清掉这个群。"""
+    try:
+        if isinstance(value, dict):
+            return max(
+                _as_float(value.get('last_reply_at'), 0.0),
+                _as_float(value.get('last_msg_at'), 0.0),
+                _as_float(value.get('armed_at'), 0.0),
+            )
+        if isinstance(value, (tuple, list)):
+            stamps: list[float] = []
+            for item in value:
+                if isinstance(item, dict):
+                    stamps.append(_as_float(item.get('t'), 0.0))
+                elif isinstance(item, (int, float)):
+                    stamps.append(_as_float(item, 0.0))
+            return max(stamps) if stamps else 0.0
+        return _as_float(value, 0.0)
+    except Exception:
+        return 0.0
+
+
+def _cleanup_stores(now: float | None = None) -> None:
+    """给模块级状态字典做轻量清理：很久没动静的群扔掉，单个字典最多留 _STORE_MAX_KEYS 个。
+
+    这些字典以前按群 key 只增不删，插件跑久了会慢慢涨内存；清理只动超过 7 天的 key，
+    最近有动静的群一个都不碰，不影响续聊 / 冷却 / 社交分寸的判定。
+    每 _STORE_CLEANUP_INTERVAL 秒最多扫一次，避免每条消息都全量遍历。
+    """
+    global _last_store_cleanup
+    try:
+        ts = time.time() if now is None else float(now)
+        if ts - _last_store_cleanup < _STORE_CLEANUP_INTERVAL:
+            return
+        _last_store_cleanup = ts
+        stores = (
+            _LAST_WAKE, _LAST_RANDOM, _LAST_ENGAGED, _LAST_ENGAGED_SENDER,
+            _LAST_MASTER, _ENGAGED, _RETORT_UNTIL, _ACTIVITY, _MY_REPLIES, _RECENT_USER,
+        )
+        for store in stores:
+            try:
+                if not store:
+                    continue
+                if store is _RETORT_UNTIL:
+                    # 安静期存的是「到什么时候」，过点就删，别当时间戳算
+                    for key, until in list(store.items()):
+                        if _as_float(until, 0.0) <= ts:
+                            store.pop(key, None)
+                    continue
+                for key, value in list(store.items()):
+                    stamp = _store_stamp(value)
+                    if stamp > 0 and ts - stamp > _STORE_TTL_SECONDS:
+                        store.pop(key, None)
+                if len(store) > _STORE_MAX_KEYS:
+                    ordered = sorted(store.items(), key=lambda item: _store_stamp(item[1]))
+                    for key, _value in ordered[: len(store) - _STORE_MAX_KEYS]:
+                        store.pop(key, None)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+
+def _activity_window() -> float:
+    """_ACTIVITY 实际保留多久的窗口。
+
+    「热闹加成」只看 lively_window_seconds，但算她在这个群说了多少（self_share）要用
+    self_share_window_seconds。以前 _ACTIVITY 被截到 lively 窗口，分子按 self_share
+    窗口筛、分母只有 120 秒的消息 → 占比被系统性放大（甚至会 >1），白白拦掉续聊/搭话。
+    所以保留窗口取两者的较大值（上限 _ACTIVITY_KEEP_MAX，别无限长），算加成时再按
+    lively 窗口数。
+    """
+    try:
+        lively = max(10.0, _as_float(_RUNTIME.get('lively_window_seconds'), 120.0))
+        share = max(30.0, _as_float(_RUNTIME.get('self_share_window_seconds'), 300.0))
+        return min(_ACTIVITY_KEEP_MAX, max(lively, share))
+    except Exception:
+        return 120.0
+
+
+def _self_share_window() -> float:
+    """算她说话占比用的窗口：跟 _ACTIVITY 实际保留的窗口取交集。
+
+    有人把 self_share_window_seconds 配得比保留窗口还大时，自动缩到保留窗口，
+    保证分子（她的回复）分母（群消息）永远按同一段时间数，不会又把占比算虚高。
+    """
+    try:
+        window = max(30.0, _as_float(_RUNTIME.get('self_share_window_seconds'), 300.0))
+        return min(window, max(30.0, _activity_window()))
+    except Exception:
+        return 300.0
+
+
 def _note_activity(event, umo: str) -> int:
-    """把这条群消息记进活跃度窗口（同一事件只记一次），返回窗口内的条数。"""
+    """把这条群消息记进活跃度窗口（同一事件只记一次），返回 lively 窗口内的条数。"""
+    _cleanup_stores()
     try:
         cached = event.get_extra(_EXTRA_ACTIVITY)
     except Exception:
@@ -323,13 +425,15 @@ def _note_activity(event, umo: str) -> int:
         except (TypeError, ValueError):
             return 0
     now = time.time()
-    window = max(10.0, _as_float(_RUNTIME.get('lively_window_seconds'), 120.0))
+    lively = max(10.0, _as_float(_RUNTIME.get('lively_window_seconds'), 120.0))
+    window = _activity_window()
     bucket = _ACTIVITY.setdefault(umo, [])
     bucket.append(now)
     cutoff = now - window
     while bucket and bucket[0] < cutoff:
         bucket.pop(0)
-    count = len(bucket)
+    lively_cutoff = now - lively
+    count = len([ts for ts in bucket if ts >= lively_cutoff])
     try:
         event.set_extra(_EXTRA_ACTIVITY, count)
     except Exception:
@@ -360,12 +464,13 @@ def activity_boost_for(umo: str) -> float:
     """给别的模块（比如兴趣唤醒）读这个群现在有多热闹。"""
     try:
         now = time.time()
-        window = max(10.0, _as_float(_RUNTIME.get('lively_window_seconds'), 120.0))
-        bucket = _ACTIVITY.get(umo) or []
-        cutoff = now - window
-        bucket = [ts for ts in bucket if ts >= cutoff]
+        lively = max(10.0, _as_float(_RUNTIME.get('lively_window_seconds'), 120.0))
+        # 保留更长的窗口（self_share 要用），但加成只数 lively 窗口内的消息
+        cutoff = now - _activity_window()
+        bucket = [ts for ts in (_ACTIVITY.get(umo) or []) if ts >= cutoff]
         _ACTIVITY[umo] = bucket
-        return activity_boost(len(bucket))
+        lively_cutoff = now - lively
+        return activity_boost(len([ts for ts in bucket if ts >= lively_cutoff]))
     except Exception:
         return 1.0
 
@@ -374,18 +479,21 @@ def _lively_snapshot(max_items: int = 5) -> dict[str, Any]:
     """给页面看：现在哪些群正热闹、加成多少。"""
     now = time.time()
     window = max(10.0, _as_float(_RUNTIME.get('lively_window_seconds'), 120.0))
+    keep = _activity_window()
     items: list[dict[str, Any]] = []
     for umo, bucket in list(_ACTIVITY.items()):
-        bucket = [ts for ts in bucket if now - ts <= window]
+        # 存储按更长窗口留（self_share 要用），但展示/加成只数 lively 窗口
+        bucket = [ts for ts in bucket if now - ts <= keep]
         if bucket:
             _ACTIVITY[umo] = bucket
         else:
             _ACTIVITY.pop(umo, None)
             continue
-        boost = activity_boost(len(bucket))
+        fresh = [ts for ts in bucket if now - ts <= window]
+        boost = activity_boost(len(fresh))
         if boost <= 1.0:
             continue
-        items.append({'umo': umo, 'count': len(bucket), 'boost': round(boost, 2)})
+        items.append({'umo': umo, 'count': len(fresh), 'boost': round(boost, 2)})
     items.sort(key=lambda item: -item['count'])
     top = '、'.join(
         '%s %d 条 ×%.1f' % (str(item['umo']).rsplit(':', 1)[-1], item['count'], item['boost'])
@@ -442,17 +550,58 @@ def _directed_elsewhere(event) -> bool:
     return False
 
 
-def _self_share_ratio(umo: str) -> float:
-    """这个群最近一段时间里，她的话占了多少（0~1）。"""
+def _directed_to_other(event) -> bool:
+    """这条消息是不是明确冲着群里别人去的（@ 了别人 / 引用了别人的话）。
+
+    跟 _directed_elsewhere 的区别：这里不管话里有没有提她的名字。
+    关键词分支需要这个口径——关键词本来就是她的名字，_directed_elsewhere 一看见名字
+    就直接返回 False（那是给随机搭话分支用的），拿它当守卫等于没守。
+
+    @ 她自己、@ 全体、引用她自己的话都不算「别人」；拿不到被引用者 ID 时也不算，
+    宁可多回一句也别把直呼漏掉。
+    """
     try:
-        window = max(30.0, _as_float(_RUNTIME.get('self_share_window_seconds'), 300.0))
+        self_id = str(event.get_self_id() or '')
+    except Exception:
+        self_id = ''
+    try:
+        parts = _message_parts(event)
+    except Exception:
+        return False
+    for comp in parts:
+        name = type(comp).__name__
+        if name == 'At':
+            try:
+                qq = str(getattr(comp, 'qq', '') or '')
+            except Exception:
+                qq = ''
+            if qq and qq != 'all' and qq != self_id:
+                return True
+        elif name == 'Reply':
+            try:
+                sender = str(getattr(comp, 'sender_id', '') or '')
+            except Exception:
+                sender = ''
+            if sender and self_id and sender != self_id:
+                return True
+    return False
+
+
+def _self_share_ratio(umo: str) -> float:
+    """这个群最近一段时间里，她的话占了多少（0~1）。
+
+    分子分母都按 self_share_window_seconds 筛；_ACTIVITY 的保留窗口由 _activity_window()
+    保证不小于这个值，两边窗口一致，占比才不会被放大。
+    """
+    try:
+        window = _self_share_window()
         now = time.time()
         mine = [ts for ts in (_MY_REPLIES.get(umo) or []) if now - ts <= window]
         _MY_REPLIES[umo] = mine
         total = [ts for ts in (_ACTIVITY.get(umo) or []) if now - ts <= window]
         if not total:
             return 0.0
-        return len(mine) / float(len(total))
+        return min(1.0, len(mine) / float(len(total)))
     except Exception:
         return 0.0
 
@@ -462,8 +611,9 @@ def _self_share_blocked(umo: str) -> bool:
     if not _RUNTIME.get('self_share_enabled', True):
         return False
     try:
-        window = max(30.0, _as_float(_RUNTIME.get('self_share_window_seconds'), 300.0))
+        window = _self_share_window()
         now = time.time()
+        # 跟 _self_share_ratio 用同一个窗口数消息，别一个 300 秒一个 120 秒
         total = len([ts for ts in (_ACTIVITY.get(umo) or []) if now - ts <= window])
         min_messages = int(_as_float(_RUNTIME.get('self_share_min_messages'), 10))
         if total < min_messages:
@@ -730,6 +880,11 @@ def _engaged_should_wake(event) -> bool:
             # 已经出了正常窗口，要求跟刚才的话题更相关才接
             min_score = max(min_score, 0.45)
         if score < min_score:
+            if image_only:
+                # 纯图片消息没有文字，_overlap / 兴趣 / 引用全是 0，本来就比不出相关度；
+                # 别把它当一次「无关 miss」（连续两次就会清掉续聊），群里有人发图本身就是接话。
+                logger.debug('[dafeiyu_group_wake] 纯图片消息算不出相关度，这次不接也不记 miss: %s', key)
+                return False
             misses = int(state.get('misses') or 0) + 1
             state['misses'] = misses
             logger.debug('[dafeiyu_group_wake] 这条跟她无关（%.2f < %.2f，%s）: %s', score, min_score, text[:40], key)
@@ -789,12 +944,23 @@ def _should_wake(event) -> bool:
             return False
         if _note_retort(text, key):
             return False
+        if text.startswith(('/', '／')):
+            # 别的插件的斜杠命令（"/摸鱼 排行" 之类）里就算带了「鱼鱼 / 鲸」也不抢答
+            return False
         _note_activity(event, umo)
         lowered = text.lower()
         keywords = _RUNTIME.get('keywords') or []
         hit_keyword = any((k in text or k.lower() in lowered) for k in keywords)
         _push_user_text(umo, text)
         if hit_keyword:
+            # 叫名字也照样要有社交分寸：别人在 @ 别人 / 引用别人时不抢话。
+            # 注意这里不能用 _directed_elsewhere：它一看见话里有她的名字就返回 False，
+            # 而关键词命中必然带名字，等于永远不生效；改用不管名字的 _directed_to_other。
+            if _RUNTIME.get('random_skip_directed', True) and _directed_to_other(event):
+                logger.debug('[dafeiyu_group_wake] 话里带她的名字，但这条是在跟别人说话，不抢: %s', key)
+                return False
+            if _self_share_blocked(umo):
+                return False
             cooldown = _as_float(_RUNTIME.get('cooldown_seconds'), 0.0)
             if not _cooldown_ok(_LAST_WAKE, _group_key(event, umo), cooldown):
                 return False
@@ -803,8 +969,6 @@ def _should_wake(event) -> bool:
             except Exception:
                 pass
             return True
-        if text.startswith(('/', '／')):
-            return False
         if _is_master_event(event) and _RUNTIME.get('master_reply_enabled', True):
             key = _group_key(event, umo)
             now_ts = time.time()
@@ -908,7 +1072,9 @@ def engaged_status() -> dict[str, Any]:
     active: dict[str, Any] = {}
     for key, state in list(_ENGAGED.items()):
         last_reply = _as_float(state.get('last_reply_at'), 0.0)
-        if now - last_reply > window or int(state.get('turns') or 0) >= max_turns:
+        # 用 > 跟 _record_my_reply 的「turns > max_turns 才清」对齐：
+        # 刚接满第 max_turns 句时状态还该留着显示，不能被状态接口提前删掉
+        if now - last_reply > window or int(state.get('turns') or 0) > max_turns:
             _ENGAGED.pop(key, None)
             continue
         active[key] = {

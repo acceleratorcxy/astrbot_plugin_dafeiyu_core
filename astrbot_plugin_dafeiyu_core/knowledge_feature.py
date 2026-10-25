@@ -46,6 +46,8 @@ DEFAULTS = {
     'inject_max_topics': 5,
     'retain_days': 90,
     'prompt': '',
+    # 单个群的总结超时（秒）：防止一个群卡住整晚的整理
+    'summary_timeout_seconds': 180,
 }
 
 _RUNTIME = dict(DEFAULTS)
@@ -56,6 +58,8 @@ _STATE: dict[str, Any] = {
     'updated_at': '',
     'groups': {},
     'stats': {'runs': 0, 'groups': 0},
+    # 每晚整理从第几个群开始（群数超过 max_groups 时轮转，保证后面的群也会被整理）
+    'cursor': 0,
 }
 _STATE_FILE = 'knowledge.json'
 _TASK = None
@@ -99,7 +103,8 @@ def _apply_runtime(section: Any) -> None:
         if key in ('enabled', 'nightly_enabled', 'inject_enabled'):
             _RUNTIME[key] = bool(value)
         elif key in ('nightly_hour', 'nightly_minute', 'max_groups', 'max_lines',
-                     'inject_max_members', 'inject_max_slang', 'inject_max_topics', 'retain_days'):
+                     'inject_max_members', 'inject_max_slang', 'inject_max_topics', 'retain_days',
+                     'summary_timeout_seconds'):
             _RUNTIME[key] = _as_int(value, default)
         else:
             _RUNTIME[key] = str(value or '').strip()
@@ -161,9 +166,10 @@ def _load(plugin: Any) -> None:
             data = json.loads(path.read_text(encoding='utf-8-sig'))
     except Exception as exc:
         logger.warning('[dafeiyu_knowledge] 读取知识库失败: %s', exc)
-    state = {'version': 1, 'updated_at': '', 'groups': {}, 'stats': {'runs': 0, 'groups': 0}}
+    state = {'version': 1, 'updated_at': '', 'groups': {}, 'stats': {'runs': 0, 'groups': 0}, 'cursor': 0}
     if isinstance(data, dict):
         state['updated_at'] = str(data.get('updated_at') or '')
+        state['cursor'] = _as_int(data.get('cursor'), 0)
         stats = data.get('stats') if isinstance(data.get('stats'), dict) else {}
         state['stats'] = {
             'runs': _as_int(stats.get('runs'), 0),
@@ -212,6 +218,20 @@ def _core_context_module():
     return None
 
 
+_PREFIX_RE = re.compile(r'^\s*(群友|助手)\s*[:：]\s*')
+
+
+def _dedupe_key(text: Any) -> str:
+    """素材去重用的规范化文本：剥掉「群友：/助手：」前缀、去掉空白，取末尾 80 字。
+
+    会话历史那边会先加「群友：/助手：」前缀，发言记录那边是原始正文，
+    两边必须用同一个规范化函数，否则短消息永远对不上，同一条会进素材两次。
+    """
+    raw = _PREFIX_RE.sub('', str(text or ''))
+    raw = re.sub(r'\s+', '', raw)
+    return raw[-80:]
+
+
 def _text_of_content(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -258,10 +278,14 @@ async def _material(plugin: Any, umo: str, limit: int) -> tuple[str, int]:
                 if not text:
                     continue
                 if role == 'assistant':
+                    # 助手发言带角色标记再规范化：别和群友说的同一句话互相顶掉去重名额
                     text = '助手：' + text
-                elif role == 'user':
-                    text = '群友：' + text
-                key = text[-80:]
+                    key = '助手|' + _dedupe_key(text)
+                else:
+                    if role == 'user':
+                        text = '群友：' + text
+                    # 群友发言与发言记录用同一个键（都剥掉前缀），同一条才不会进素材两次
+                    key = _dedupe_key(text)
                 if key in seen:
                     continue
                 seen.add(key)
@@ -289,7 +313,7 @@ async def _material(plugin: Any, umo: str, limit: int) -> tuple[str, int]:
         except Exception:
             stamp = ''
         line = '- %s %s：%s' % (stamp, name, text)
-        key = text[-80:]
+        key = _dedupe_key(text)
         if key in seen:
             continue
         seen.add(key)
@@ -399,11 +423,19 @@ async def _summarize(plugin: Any, umo: str, name: str, material: str) -> dict | 
         return None
     prompt = str(_RUNTIME.get('prompt') or '').strip() or SUMMARIZE_PROMPT
     header = '群：%s\n聊天记录：\n' % (name or umo)
+    timeout = max(30, _as_int(_RUNTIME.get('summary_timeout_seconds'), 180))
     try:
-        resp = await provider.text_chat(
-            prompt=header + material,
-            system_prompt=prompt,
+        # 单群限时：卡住的群跳过，别把整晚的整理拖死
+        resp = await asyncio.wait_for(
+            provider.text_chat(
+                prompt=header + material,
+                system_prompt=prompt,
+            ),
+            timeout=float(timeout),
         )
+    except asyncio.TimeoutError:
+        logger.warning('[dafeiyu_knowledge] 总结群聊超时（%ss）跳过 %s', timeout, umo)
+        return None
     except Exception as exc:
         logger.warning('[dafeiyu_knowledge] 总结群聊失败 %s: %s', umo, exc)
         return None
@@ -416,6 +448,25 @@ async def _summarize(plugin: Any, umo: str, name: str, material: str) -> dict | 
     if data is None:
         logger.info('[dafeiyu_knowledge] 模型输出不是 JSON，跳过: %s', umo)
     return data
+
+
+def _rotate_umos(umos: list[str], max_groups: int) -> list[str]:
+    """从上次停下的位置开始取 max_groups 个群（越界取模）。
+
+    群数超过 max_groups 时轮着来，后面的群不会被永远跳过；失败也不影响整理。
+    """
+    total = len(umos)
+    if total <= max_groups:
+        return list(umos)
+    try:
+        offset = _as_int(_STATE.get('cursor'), 0) % total
+        picked = umos[offset:offset + max_groups]
+        if len(picked) < max_groups:
+            picked = picked + umos[:max_groups - len(picked)]
+        _STATE['cursor'] = (offset + len(picked)) % total
+    except Exception:
+        return umos[:max_groups]
+    return picked
 
 
 async def run_nightly(plugin: Any, force: bool = False) -> dict:
@@ -442,20 +493,28 @@ async def run_nightly(plugin: Any, force: bool = False) -> dict:
     max_groups = max(1, _as_int(_RUNTIME.get('max_groups'), 20))
     updated = 0
     processed = 0
-    for umo in umos[:max_groups]:
-        material, count = await _material(plugin, umo, limit)
-        if count < 6 and not force:
-            continue
-        processed += 1
-        name = await _group_name(plugin, umo)
-        data = await _summarize(plugin, umo, name, material)
-        if data is not None:
-            entry = _merge(umo, name, data, count)
-            updated += 1
-            logger.info(
-                '[dafeiyu_knowledge] 群档案更新: %s 成员 %d / 黑话 %d / 话题 %d',
-                umo, len(entry['members']), len(entry['slang']), len(entry['topics']),
-            )
+    # 排序后再轮转，保证 offset 每次都对得上同一批群
+    for umo in _rotate_umos(sorted(set(umos)), max_groups):
+        try:
+            material, count = await _material(plugin, umo, limit)
+            if count < 6 and not force:
+                await asyncio.sleep(1.0)
+                continue
+            processed += 1
+            name = await _group_name(plugin, umo)
+            data = await _summarize(plugin, umo, name, material)
+            if data is not None:
+                entry = _merge(umo, name, data, count)
+                updated += 1
+                logger.info(
+                    '[dafeiyu_knowledge] 群档案更新: %s 成员 %d / 黑话 %d / 话题 %d',
+                    umo, len(entry['members']), len(entry['slang']), len(entry['topics']),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # 一个群出错只跳过它，继续整理下一个群
+            logger.warning('[dafeiyu_knowledge] 整理群 %s 失败，跳过: %s', umo, exc)
         await asyncio.sleep(1.0)
 
     _STATE['stats']['runs'] = _as_int(_STATE['stats'].get('runs'), 0) + 1

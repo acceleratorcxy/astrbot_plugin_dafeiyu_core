@@ -15,7 +15,7 @@
 .
 ├── astrbot_plugin_dafeiyu_core/     # 插件本体（安装时复制这个目录）
 │   ├── main.py                      # 入口：命令、权限门、汇报、子模块装配
-│   ├── _conf_schema.json            # 14 段配置定义（页面「配置」tab 由它生成）
+│   ├── _conf_schema.json            # 13 段配置定义（页面「配置」tab 由它生成）
 │   ├── metadata.yaml                # 插件元信息（AstrBot 识别用）
 │   ├── owner_feature.py             # 主人身份与听令规则
 │   ├── group_wake_feature.py        # 群聊唤醒 / 随机搭话 / 续聊 / 热闹加成
@@ -34,7 +34,7 @@
 │   ├── README.md                    # 插件说明（开发者向：模块、配置、坑）
 │   └── views/panel/index.html       # 插件页面（总览/命令/兴趣/备份/配置/上下文）
 ├── docs/
-│   └── 使用手册.md                   # 给使用者的手册：命令、页面、14 段配置全表、FAQ、回滚
+│   └── 使用手册.md                   # 给使用者的手册：命令、页面、13 段配置全表、FAQ、回滚
 ├── CHANGELOG.md
 ├── LICENSE
 └── README.md                        # 本文件
@@ -101,7 +101,7 @@
 
 ## 文档
 
-- 使用手册：[docs/使用手册.md](docs/使用手册.md)（命令、页面、14 段配置全表、FAQ、一键回滚）
+- 使用手册：[docs/使用手册.md](docs/使用手册.md)（命令、页面、13 段配置全表、FAQ、一键回滚）
 - 插件说明：[astrbot_plugin_dafeiyu_core/README.md](astrbot_plugin_dafeiyu_core/README.md)（模块结构、LLM 工具、配置项、开发坑）
 - 更新记录：[CHANGELOG.md](CHANGELOG.md)
 

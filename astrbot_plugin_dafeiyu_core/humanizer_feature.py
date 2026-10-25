@@ -34,6 +34,8 @@ DEFAULTS = {'enabled': True, 'bot_filter': [], 'also_webchat': True, 'reply_dela
 STYLE_REMINDER = '\n\n【聊天风格】像真人用 QQ 聊天：一次回一两句话就行，不要用 markdown、列表、标题，不要写括号动作旁白或内心戏，不要自称 AI/助手/模型，不要输出思考过程。'
 SENT_END = '。！？!?~…'
 SPLIT_RE = re.compile('[^。！？!?~…\\n]*[。！？!?~…]+|[^。！？!?~…\\n]+')
+# 单条气泡太长时优先在这些字符后面断开（尽量落在标点/空格处，别把话切碎）
+SEG_BREAKS = set('，,。.！!？?；;：:、~～…）)」』】 \t\u3000')
 PAREN_RE = re.compile('[（(]([^（）()]{0,120})[）)]')
 ACTION_WORDS = ('叹', '笑', '摸', '歪', '看', '盯', '眨', '甩', '伸', '摊', '挠', '抱', '捏', '愣', '沉默', '无奈', '小声', '嘀咕', '翻白眼', '挑眉', '耸肩', '低头', '抬头', '脸红', '嘴角', '尾巴', '耳朵', '鲸', '鱼', '挥舞', '拍', '戳', '咬', '嚼', '摇', '蹦', '转圈', '趴', '躺', '跪', '捂', '扶额', '目光', '眼神', '动作', '表情', '心里', '内心', '心想', '想着', '随后', '于是', '然后', '顿了顿', '顿了顿', '轻笑', '轻笑', '哼了', '哼了')
 AI_SENT_RE = re.compile('(作为(一个)?(?:AI|人工智能|语言模型|助手|机器人|虚拟助手)|我是(一个)?(?:AI|人工智能|语言模型|AI助手)|有什么(?:可以|能)帮|需要我(?:帮忙|帮你|帮)|能帮到你|希望对你有帮助|很高兴(?:能)?为你|还有什么(?:可以|需要)|您可以(?:随时)?(?:告诉|询问|联系))', re.I)
@@ -109,11 +111,22 @@ class HumanizerFeature:
         if not self._should_handle(event):
             return
         result = event.get_result()
-        if result is None or not getattr(result, 'chain', None):
+        if result is None:
+            return
+        if getattr(result, 'result_content_type', None) == ResultContentType.STREAMING_RESULT:
+            # 流式结果由平台适配器边生成边发（chain 是空的、内容在 async_stream 里），这里拆不了条；
+            # 能做的是把 markdown 渲染和文转图关掉，保证吐给平台的是纯文本。
+            try:
+                if bool(self._cfg('force_plain_text', True)):
+                    result.use_markdown_ = False
+                    result.use_t2i_ = False
+                logger.debug('[dafeiyu_humanizer] 流式模式跳过拆条/清洗: %s', getattr(event, 'unified_msg_origin', '') or '')
+            except Exception as exc:
+                logger.warning(f'[dafeiyu_humanizer] 流式模式强制纯文本失败: {exc}')
+            return
+        if not getattr(result, 'chain', None):
             return
         try:
-            if getattr(result, 'result_content_type', None) == ResultContentType.STREAMING_RESULT:
-                return
             try:
                 is_llm = result.is_llm_result() or result.is_model_result()
             except Exception:
@@ -206,15 +219,67 @@ class HumanizerFeature:
             max_seg = 1
         parts = [p.strip() for p in SPLIT_RE.findall(text) if p and p.strip()]
         if not parts:
-            return [text.strip()]
-        if len(parts) <= max_seg:
-            return parts
-        merged = ''.join(parts[max_seg - 1:])
-        merged = re.sub('[。！？!?~…]+', '，', merged)
-        merged = merged.strip('，').strip()
-        if not merged:
-            return parts[:max_seg]
-        return parts[:max_seg - 1] + [merged]
+            return [text.strip()] if text.strip() else []
+        # 先按标点断句，再把过长的句子按 max_chars_per_segment 切短：
+        # max_segments 只管「最多几条」，单条太长时不会再整段糊成一条几百字的气泡。
+        max_chars = int(self._cfg('max_chars_per_segment', DEFAULTS['max_chars_per_segment']) or 0)
+        if max_chars > 0:
+            pieces = []
+            for part in parts:
+                pieces.extend(self._chunk_text(part, max_chars))
+        else:
+            pieces = parts
+        pieces = [p for p in pieces if p and p.strip()]
+        if not pieces:
+            return [text.strip()] if text.strip() else []
+        if len(pieces) <= max_seg:
+            return pieces
+        # 超过条数上限：把碎片均分成 max_seg 条（不再「前几条短、最后一条巨长」）
+        total = sum(len(p) for p in pieces)
+        target = max(1, -(-total // max_seg))
+        groups = []
+        buf = ''
+        for piece in pieces:
+            if buf and len(buf) + len(piece) > target:
+                groups.append(buf)
+                buf = piece
+            else:
+                buf += piece
+        if buf:
+            groups.append(buf)
+        while len(groups) > max_seg:
+            tail = groups.pop()
+            if not groups:
+                groups = [tail]
+                break
+            groups[-1] = groups[-1] + tail
+        return [g for g in groups if g]
+
+    def _chunk_text(self, text: str, max_chars: int) -> list[str]:
+        """把一段话按 max_chars 切成几条：中文按字符切，尽量断在标点/空格后面。"""
+        text = (text or '').strip()
+        if not text:
+            return []
+        if max_chars <= 0 or len(text) <= max_chars:
+            return [text]
+        out = []
+        rest = text
+        floor = max(1, max_chars // 2)
+        while len(rest) > max_chars:
+            cut = 0
+            for idx in range(max_chars - 1, floor - 1, -1):
+                if rest[idx] in SEG_BREAKS:
+                    cut = idx + 1
+                    break
+            if cut <= 0:
+                cut = max_chars
+            head = rest[:cut].strip()
+            if head:
+                out.append(head)
+            rest = rest[cut:].lstrip()
+        if rest.strip():
+            out.append(rest.strip())
+        return out
 
     def _clean_text(self, text: str) -> str:
         if not text:
@@ -237,7 +302,8 @@ class HumanizerFeature:
             t = re.sub('^\\s{0,3}\\d+[.、)]\\s+', '', t, flags=re.M)
             t = re.sub('^\\s{0,3}(?:-{3,}|\\*{3,}|_{3,})\\s*$', '', t, flags=re.M)
             t = re.sub('\\[([^\\]\\n]{1,80})\\]\\([^)\\n]+\\)', '\\1', t)
-            t = re.sub('<[^>]{1,200}>', '', t)
+            # 只删 HTML 标签式的尖括号内容；<https://...>、<@123> 这类正常内容留着
+            t = re.sub('</?(?![a-zA-Z][a-zA-Z0-9+.-]*://)[a-zA-Z][^<>]{0,50}>', '', t)
             t = t.replace('|', ' ')
         if bool(self._cfg('strip_parenthetical', True)):
             t = self._strip_parens(t)

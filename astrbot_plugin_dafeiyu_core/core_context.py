@@ -53,6 +53,71 @@ def _save_json(path: Path, data: Any) -> None:
     os.replace(tmp, path)
 
 
+RESTORE_TTL_SECONDS = 86400.0
+STATE_LIMIT = 200
+
+
+def _normalize_restore(raw: Any) -> dict[str, dict]:
+    """人格资料复原块按 umo 存：{umo: {text, turns, at, source}}。
+
+    旧版本是全局单 dict（{"text": ...}），无法判断属于哪个会话，直接丢弃并
+    留一条 warning —— 宁可少注入一次，也不能塞进不相关的群聊。
+    """
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    if "text" in raw and not any(isinstance(v, dict) for v in raw.values()):
+        logger.warning(
+            "[dafeiyu_core] context_state.json 里的人格资料复原块是旧格式（全局单例），"
+            "已丢弃以免注入到不相关会话"
+        )
+        return {}
+    out: dict[str, dict] = {}
+    for umo, entry in raw.items():
+        if not isinstance(entry, dict):
+            continue
+        if not str(entry.get("text") or "").strip():
+            continue
+        out[str(umo)] = entry
+    return out
+
+
+def _as_int(value: Any, default: int) -> int:
+    """容错取整：配置被写成 "20"、200.0、"45s" 都不抛异常，实在不合法就用默认值。"""
+    try:
+        return int(float(str(value).strip().rstrip("sS秒")))
+    except Exception:
+        return default
+
+
+def _as_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _swallow_task_result(task) -> None:
+    """task 的 done 回调：把取消/异常吃掉，免得 "Task exception was never retrieved"。"""
+    try:
+        task.exception()
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
+def _entry_at(value: Any) -> float:
+    """取一条状态记录的时间戳（summaries/warn 的 at、groups 的 last_auto）。"""
+    if not isinstance(value, dict):
+        return 0.0
+    for key in ("at", "last_auto"):
+        try:
+            ts = float(value.get(key) or 0)
+        except Exception:
+            continue
+        if ts > 0:
+            return ts
+    return 0.0
+
+
 def _label_of_umo(umo: str) -> str:
     """把 unified_msg_origin 变成人看的标签，例如「aiocqhttp 群聊 987654321」。"""
     parts = str(umo or "").split(":")
@@ -232,11 +297,12 @@ class ContextGuard:
         self._state: dict[str, Any] = {
             "summaries": {},
             "warn": {},
-            "persona_restore": None,
+            "persona_restore": {},
             "groups": {},
         }
         self._counter = EstimateTokenCounter()
         self._task = None
+        self._bad_interval_warned = False
         self._load()
 
     # ------------------------------------------------------------------ state
@@ -246,11 +312,36 @@ class ContextGuard:
             for key in ("summaries", "warn", "groups"):
                 if not isinstance(data.get(key), dict):
                     data[key] = {}
-            if not isinstance(data.get("persona_restore"), dict):
-                data["persona_restore"] = None
+            data["persona_restore"] = _normalize_restore(data.get("persona_restore"))
             self._state = data
 
+    def _prune_state(self) -> None:
+        """state 只增不删会越滚越大（cid 一变就多一条）：按时间戳只留最近 STATE_LIMIT 条。
+
+        在 _save 之前调用；没超限时几乎零开销。
+        """
+        try:
+            for key in ("summaries", "warn", "groups"):
+                bucket = self._state.get(key)
+                if not isinstance(bucket, dict) or len(bucket) <= STATE_LIMIT:
+                    continue
+                kept = sorted(
+                    bucket.items(), key=lambda kv: _entry_at(kv[1]), reverse=True
+                )
+                self._state[key] = dict(kept[:STATE_LIMIT])
+            # 复原块：过期的（超过一天）顺手清掉，免得换个 umo 就留一份
+            restore = self._state.get("persona_restore")
+            if isinstance(restore, dict) and restore:
+                now = _now()
+                for umo in list(restore.keys()):
+                    ts = _entry_at(restore.get(umo))
+                    if ts <= 0 or now - ts > RESTORE_TTL_SECONDS:
+                        restore.pop(umo, None)
+        except Exception as exc:
+            logger.warning("[dafeiyu_core] 裁剪上下文状态失败: %s", exc)
+
     def _save(self) -> None:
+        self._prune_state()
         try:
             _save_json(self._state_path, self._state)
         except Exception as exc:
@@ -354,18 +445,20 @@ class ContextGuard:
                     req.system_prompt = (sp.rstrip() + "\n\n" + block) if sp.strip() else block
 
             # 2) 注入人格资料复原块（临时，不写历史）
-            restore = self._state.get("persona_restore")
-            if isinstance(restore, dict) and restore.get("text"):
-                part = TextPart(text=RESTORE_MARK + restore["text"])
+            #    按 umo 存：只有当时 /压缩 的那个会话才看得到，别的群聊/私聊不受影响
+            restores = self._state.get("persona_restore")
+            entry = restores.get(umo) if isinstance(restores, dict) else None
+            if isinstance(entry, dict) and entry.get("text"):
+                part = TextPart(text=RESTORE_MARK + str(entry.get("text")))
                 try:
                     part.mark_as_temp()
                 except Exception:
                     pass
                 req.extra_user_content_parts.append(part)
                 try:
-                    restore["turns"] = int(restore.get("turns") or 0) - 1
-                    if restore["turns"] <= 0:
-                        self._state["persona_restore"] = None
+                    entry["turns"] = int(entry.get("turns") or 0) - 1
+                    if entry["turns"] <= 0:
+                        restores.pop(umo, None)
                     self._save()
                 except Exception:
                     pass
@@ -383,8 +476,6 @@ class ContextGuard:
                         "要我把前面聊的压缩成一段记忆吗？回复 /压缩 我就整理，"
                         "不想现在压也可以继续聊。）"
                     )
-                    self._state["warn"][cid] = {"at": _now(), "ratio": round(ratio, 3)}
-                    self._save()
                     # 只私聊发给主人：上下文用量是隐私，绝不往群聊里发
                     sent = []
                     try:
@@ -392,7 +483,15 @@ class ContextGuard:
                     except Exception as exc:
                         logger.warning("[dafeiyu_core] 发送上下文提醒失败: %s", exc)
                     if sent:
+                        # 发成功了才记冷却：发不出去时不能白占 warn_cooldown_minutes，
+                        # 否则一次发送失败就把接下来半小时的提醒吞掉
+                        self._state["warn"][cid] = {"at": _now(), "ratio": round(ratio, 3)}
+                        self._save()
                         logger.info("[dafeiyu_core] 上下文提醒已私聊发给主人: %s", ",".join(sent))
+                    else:
+                        logger.warning(
+                            "[dafeiyu_core] 上下文提醒没发出去（不占冷却，下次请求再看）: %s", umo
+                        )
         except Exception as exc:
             logger.warning("[dafeiyu_core] 上下文检查失败: %s", exc)
 
@@ -495,7 +594,7 @@ class ContextGuard:
         restore_note = ""
         if apply_restore and bool(self.cfg.get("auto_reload_persona", True)):
             try:
-                restore_note = await self._apply_persona_restore()
+                restore_note = await self._apply_persona_restore(umo)
             except Exception as exc:
                 logger.warning("[dafeiyu_core] 读取人格备份失败: %s", exc)
         self._save()
@@ -574,7 +673,7 @@ class ContextGuard:
         cm = getattr(self.plugin.context, "conversation_manager", None)
         if cm is None:
             return []
-        page_size = max(10, int(self._group_cfg("group_scan_limit", 200)))
+        page_size = max(10, _as_int(self._group_cfg("group_scan_limit", 200), 200))
         try:
             convs, _total = await cm.get_filtered_conversations(
                 page=1, page_size=page_size
@@ -582,11 +681,11 @@ class ContextGuard:
         except Exception as exc:
             logger.warning("[dafeiyu_core] 扫描群聊会话失败: %s", exc)
             return []
-        min_messages = max(4, int(self._group_cfg("group_min_messages", 20)))
-        pause = max(0, float(self._group_cfg("group_pause_seconds", 45)))
-        idle_need = max(60, float(self._group_cfg("group_idle_minutes", 30)) * 60)
-        ratio_need = float(self._group_cfg("group_auto_ratio", 0.7))
-        daily_hour = int(self._group_cfg("group_daily_hour", 4))
+        min_messages = max(4, _as_int(self._group_cfg("group_min_messages", 20), 20))
+        pause = max(0, _as_float(self._group_cfg("group_pause_seconds", 45), 45.0))
+        idle_need = max(60, _as_float(self._group_cfg("group_idle_minutes", 30), 30.0) * 60)
+        ratio_need = _as_float(self._group_cfg("group_auto_ratio", 0.7), 0.7)
+        daily_hour = _as_int(self._group_cfg("group_daily_hour", 4), 4)
         now = _now()
         today = time.strftime("%Y-%m-%d")
         local_hour = time.localtime().tm_hour
@@ -636,9 +735,37 @@ class ContextGuard:
                 done.append(row)
         return done
 
+    def _group_interval(self) -> int:
+        """巡检间隔（秒）：配置写成 "120s"/"abc" 之类也只回落默认，绝不抛异常。
+
+        这里必须容错：以前 int() 直接写在 while 体内、内层 try 之外，
+        配置一写错 ValueError 就冲出循环，循环永久死掉且 start_background 不会重启。
+        """
+        raw = self._group_cfg("group_check_interval_seconds", 120)
+        value = 0
+        try:
+            value = int(float(str(raw).strip().rstrip("sS秒")))
+        except Exception:
+            value = 0
+        if value <= 0:
+            if not self._bad_interval_warned:
+                self._bad_interval_warned = True
+                logger.warning(
+                    "[dafeiyu_core] group_check_interval_seconds=%r 不合法，按默认 120 秒巡检",
+                    raw,
+                )
+            value = 120
+        return max(30, value)
+
     def start_background(self) -> None:
-        if getattr(self, "_task", None) is not None:
-            return
+        """幂等启动：task 还在跑就直接返回，已经结束（或没建过）就重新拉起来。"""
+        task = getattr(self, "_task", None)
+        try:
+            if task is not None and not task.done():
+                return
+        except Exception:
+            pass
+        self._task = None
         if not bool(self.cfg.get("enabled", True)):
             return
         if not bool(self._group_cfg("group_auto_compress", True)):
@@ -648,38 +775,77 @@ class ContextGuard:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             loop = asyncio.get_event_loop()
-        self._task = loop.create_task(self._auto_loop())
+        try:
+            self._task = loop.create_task(self._auto_loop())
+        except Exception as exc:
+            self._task = None
+            logger.warning("[dafeiyu_core] 启动群聊自动压缩失败: %s", exc)
+            return
         logger.info(
-            "[dafeiyu_core] 已启动群聊自动压缩（每 %s 秒巡检一次）",
-            max(30, int(self._group_cfg("group_check_interval_seconds", 120))),
+            "[dafeiyu_core] 已启动群聊自动压缩（每 %s 秒巡检一次）", self._group_interval()
         )
 
     async def _auto_loop(self) -> None:
+        """巡检循环：单次失败只记 warning，循环继续，不靠重启自愈。"""
         try:
             await asyncio.sleep(20)
-            while True:
-                try:
-                    await self.scan_groups_once()
-                except Exception as exc:
-                    logger.warning("[dafeiyu_core] 群聊自动压缩巡检异常: %s", exc)
-                interval = max(30, int(self._group_cfg("group_check_interval_seconds", 120)))
-                await asyncio.sleep(interval)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.warning("[dafeiyu_core] 群聊自动压缩循环退出: %s", exc)
+            logger.warning("[dafeiyu_core] 群聊自动压缩首轮等待异常: %s", exc)
+        while True:
+            try:
+                interval = self._group_interval()
+                await self.scan_groups_once()
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # 单次失败（配置写错、某个群会话异常）都不能让循环退出
+                logger.warning("[dafeiyu_core] 群聊自动压缩巡检异常: %s", exc)
+                try:
+                    await asyncio.sleep(60)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    pass
 
     def stop_background(self) -> None:
+        """同步接口（main.py 的 terminate 里不 await）：cancel 后交给回调吞掉结果。"""
         task = getattr(self, "_task", None)
-        if task is not None and not task.done():
-            try:
-                task.cancel()
-            except Exception:
-                pass
         self._task = None
+        if task is None:
+            return
+        try:
+            if not task.done():
+                task.cancel()
+        except Exception:
+            pass
+        try:
+            task.add_done_callback(_swallow_task_result)
+        except Exception:
+            pass
+
+    async def stop_background_async(self) -> None:
+        """想真正等一下的调用方用这个：cancel 后 await 掉，抑制 CancelledError。"""
+        task = getattr(self, "_task", None)
+        self._task = None
+        if task is None:
+            return
+        try:
+            if not task.done():
+                task.cancel()
+        except Exception:
+            pass
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning("[dafeiyu_core] 停止群聊自动压缩时异常: %s", exc)
 
     # ------------------------------------------------- persona restore block
-    async def _apply_persona_restore(self) -> str:
+    async def _apply_persona_restore(self, umo: str = "") -> str:
         data, meta = await self.plugin._backup.latest()
         if not data:
             return "（不过还没找到人格备份，先用现有设定继续。）"
@@ -718,13 +884,33 @@ class ContextGuard:
             if pinned:
                 parts.append("她惦记的兴趣：" + "；".join(pinned))
         text = "\n".join(parts).strip()
-        turns = int(self.cfg.get("persona_restore_turns", 6) or 6)
-        self._state["persona_restore"] = {
-            "text": text,
-            "turns": max(1, turns),
-            "at": _now(),
-            "source": meta.get("filename"),
-        }
+        try:
+            turns = int(self.cfg.get("persona_restore_turns", 6) or 6)
+        except Exception:
+            turns = 6
+        if not str(umo or "").strip():
+            # 没有 umo 就不知道该注入给谁：宁可不记录，也不能塞进所有会话
+            logger.warning("[dafeiyu_core] 人格资料复原块缺少 umo，跳过记录")
+            return "人格资料也从最新备份重新过了一遍。"
+        try:
+            restores = self._state.get("persona_restore")
+            if not isinstance(restores, dict):
+                restores = {}
+                self._state["persona_restore"] = restores
+            restores[str(umo)] = {
+                "text": text,
+                "turns": max(1, turns),
+                "at": _now(),
+                "source": meta.get("filename"),
+            }
+            if len(restores) > STATE_LIMIT:
+                kept = sorted(
+                    restores.items(), key=lambda kv: _entry_at(kv[1]), reverse=True
+                )
+                self._state["persona_restore"] = dict(kept[:STATE_LIMIT])
+            self._save()
+        except Exception as exc:
+            logger.warning("[dafeiyu_core] 记录人格资料复原块失败: %s", exc)
         return "人格资料也从最新备份重新过了一遍。"
 
     # ------------------------------------------------------ context report
@@ -851,13 +1037,31 @@ class ContextGuard:
             return None
         return getattr(convs[0], "user_id", None)
 
+    def _latest_restore(self) -> dict | None:
+        """按 umo 存的复原块里挑最近一条（页面/报告仍然按单条展示）。"""
+        try:
+            restores = self._state.get("persona_restore")
+            if not isinstance(restores, dict) or not restores:
+                return None
+            items = [(k, v) for k, v in restores.items() if isinstance(v, dict)]
+            if not items:
+                return None
+            items.sort(key=lambda kv: _entry_at(kv[1]), reverse=True)
+            entry = dict(items[0][1])
+            entry["umo"] = items[0][0]
+            return entry
+        except Exception:
+            return None
+
     async def status(self, umo: str | None = None) -> dict:
         out: dict[str, Any] = {
             "enabled": bool(self.cfg.get("enabled", True)),
             "warn_ratio": self.cfg.get("warn_ratio", 0.75),
             "summaries": dict(self._state["summaries"]),
             "summary_count": len(self._state["summaries"]),
-            "persona_restore": self._state.get("persona_restore"),
+            # 页面/报告只认单条：给最近的那条（真正的按 umo 存储在 persona_restore_map）
+            "persona_restore": self._latest_restore(),
+            "persona_restore_map": dict(self._state.get("persona_restore") or {}),
             "group_auto": {
                 "enabled": bool(self._group_cfg("group_auto_compress", True)),
                 "daily_hour": self._group_cfg("group_daily_hour", 4),
@@ -865,9 +1069,7 @@ class ContextGuard:
                 "pause_seconds": self._group_cfg("group_pause_seconds", 45),
                 "min_messages": self._group_cfg("group_min_messages", 20),
                 "auto_ratio": self._group_cfg("group_auto_ratio", 0.7),
-                "check_interval_seconds": self._group_cfg(
-                    "group_check_interval_seconds", 120
-                ),
+                "check_interval_seconds": self._group_interval(),
             },
             "group_states": dict(self._state.get("groups") or {}),
         }

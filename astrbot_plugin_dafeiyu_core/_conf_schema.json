@@ -564,6 +564,11 @@
         "type": "int",
         "default": 80
       },
+      "fetch_daily_limit": {
+        "description": "每天最多抓几次网页正文（0=不限；和搜索次数分开算）",
+        "type": "int",
+        "default": 80
+      },
       "cooldown_seconds": {
         "description": "同一会话两次搜索的最小间隔（秒）",
         "type": "int",
@@ -725,6 +730,11 @@
         "type": "int",
         "default": 1440
       },
+      "caption_timeout_seconds": {
+        "description": "转述图片最多等几秒（超时就跳过这张图，别把整轮卡死）",
+        "type": "int",
+        "default": 120
+      },
       "fresh_block_enabled": {
         "description": "每次群聊回话都带上「现在几点 + 群里最新几条」（防止她接已经过时的旧话题）",
         "type": "bool",
@@ -877,6 +887,33 @@
         "type": "string",
         "default": "安"
       },
+      "sleep_confirm_enabled": {
+        "description": "说晚安后不立刻睡，等主人再回一句「安」才睡（关掉就是老样子：一句晚安直接睡）",
+        "type": "bool",
+        "default": true
+      },
+      "sleep_confirm_seconds": {
+        "description": "说完晚安等主人回「安」最多等多少秒，超时就不等了、按正常聊天走",
+        "type": "int",
+        "default": 600
+      },
+      "sleep_confirm_words": {
+        "description": "主人回哪些话算「确认去睡」（默认只要单独一个「安」）",
+        "type": "list",
+        "default": [
+          "安"
+        ]
+      },
+      "sleep_confirm_reply": {
+        "description": "主人回「安」确认后，她回哪两个字的短话，然后睡",
+        "type": "string",
+        "default": "嗯"
+      },
+      "max_sleep_hours": {
+        "description": "一次最多睡几个小时（防止跨天算错睡一整天，超过就按这个上限醒）",
+        "type": "int",
+        "default": 10
+      },
       "goodnight_keywords": {
         "description": "哪些话算「主人说晚安」（说晚安就立刻睡）",
         "type": "list",
@@ -949,6 +986,11 @@
         "description": "每个对话最多排队多少条消息",
         "type": "int",
         "default": 20
+      },
+      "min_awake_minutes": {
+        "description": "刚醒多少分钟内不再被「晚安」哄睡（防止白天一看就困）",
+        "type": "int",
+        "default": 30
       },
       "max_group_buffer": {
         "description": "每个群最多记多少条睡着后的消息",
@@ -1040,6 +1082,11 @@
         "description": "只整理这些机器人平台的群（umo 关键字，留空=全部）",
         "type": "list",
         "default": []
+      },
+      "summary_timeout_seconds": {
+        "description": "总结一个群的超时时间（秒，最小 30，超时跳过这个群）",
+        "type": "int",
+        "default": 180
       }
     }
   },
@@ -1066,6 +1113,11 @@
         "description": "只保留最新几份",
         "type": "int",
         "default": 3
+      },
+      "manual_keep": {
+        "description": "手动备份（页面点备份、/备份 现在）最多保留几份（自动备份另按上面 keep 轮换）",
+        "type": "int",
+        "default": 20
       }
     }
   },
@@ -1155,17 +1207,6 @@
       }
     }
   },
-  "page": {
-    "description": "🖥️ 页面",
-    "type": "object",
-    "items": {
-      "show_advanced": {
-        "description": "页面显示高级选项",
-        "type": "bool",
-        "default": true
-      }
-    }
-  },
   "notify": {
     "description": "🔒 主人私聊通知（隐私信息只私聊发给主人，不发群）",
     "type": "object",
@@ -1184,11 +1225,6 @@
         "description": "每晚整理完私聊发我一份报告",
         "type": "bool",
         "default": true
-      },
-      "warn_in_group": {
-        "description": "允许在群聊里提上下文/配置（默认关，别开）",
-        "type": "bool",
-        "default": false
       },
       "report_only_own_profile": {
         "description": "汇报只算鲸鲸自己的配置档案（别的档案的机器人会话不列出来）",

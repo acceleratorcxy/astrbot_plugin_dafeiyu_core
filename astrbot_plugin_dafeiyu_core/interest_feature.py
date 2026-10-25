@@ -159,6 +159,21 @@ _STOP_BIGRAMS = {
 _ASCII_TOKEN_RE = re.compile(r'[a-z][a-z0-9_\-\.]{1,}')
 _CJK_RUN_RE = re.compile('[一-鿿]{2,}')
 _NOTE_TOKEN_CACHE: dict[str, tuple] = {}
+_NOTE_CACHE_MAX = 2000
+
+def _note_cache_key(item) -> str:
+    """兴趣记录缓存 key（跟 _note_tokens 里用的必须一致）。"""
+    try:
+        return str(item.get('id') or item.get('name') or '')
+    except Exception:
+        return ''
+
+def _note_cache_drop(item) -> None:
+    """兴趣/记录被删或改了就清掉它的 token 缓存，免得按旧内容匹配。"""
+    try:
+        _NOTE_TOKEN_CACHE.pop(_note_cache_key(item), None)
+    except Exception:
+        pass
 
 def _text_tokens(text: str) -> dict[str, set[str]]:
     """把文本拆成「英文词」和「中文双字组」两类 token，用于粗粒度相关度匹配。"""
@@ -179,13 +194,17 @@ def _note_tokens(item: dict[str, Any]) -> dict[str, set[str]]:
     if not notes:
         return {'ascii': set(), 'cjk': set()}
     signature = (len(notes), '|'.join(str(n.get('at') or '') + str(n.get('title') or '') + str(n.get('text') or '')[:60] for n in notes[-8:]))
-    key = str(item.get('id') or item.get('name') or '')
+    key = _note_cache_key(item)
     cached = _NOTE_TOKEN_CACHE.get(key)
     if cached and cached[0] == signature:
         return cached[1]
     merged = ' '.join(str(n.get('title') or '') + ' ' + str(n.get('text') or '') for n in notes)
     tokens = _text_tokens(merged)
     _NOTE_TOKEN_CACHE[key] = (signature, tokens)
+    if len(_NOTE_TOKEN_CACHE) > _NOTE_CACHE_MAX:
+        # 超上限就删最早写进来的（dict 保序，前面的就是最旧的）
+        for old_key in list(_NOTE_TOKEN_CACHE)[:len(_NOTE_TOKEN_CACHE) - _NOTE_CACHE_MAX]:
+            _NOTE_TOKEN_CACHE.pop(old_key, None)
     return tokens
 
 def _related_score(item: dict[str, Any], text_tokens: dict[str, set[str]]) -> float:
@@ -203,6 +222,14 @@ def _related_score(item: dict[str, Any], text_tokens: dict[str, set[str]]) -> fl
     return min(1.0, score)
 
 _MERGE_KIND_RANK = {'persona': 3, 'master': 2, 'auto': 1}
+
+def _merge_kind(a, b) -> str:
+    """合并后保留哪个 kind：任一方是 master 就保 master（主人手动加的标签不能被降级），否则取 rank 更高的。"""
+    ka, kb = str(a or 'auto'), str(b or 'auto')
+    if ka == 'master' or kb == 'master':
+        return 'master'
+    return ka if _MERGE_KIND_RANK.get(ka, 1) >= _MERGE_KIND_RANK.get(kb, 1) else kb
+
 _MERGE_STRIP_RE = re.compile(r'[^0-9a-z\u4e00-\u9fff]+')
 
 def _norm_name(name) -> str:
@@ -434,16 +461,19 @@ class InterestStore:
         """把 drop 的别名、记录、热度都并进 keep（保留更重要的那条）。"""
         keep_names = {_norm_name(keep.get('name'))}
         aliases: list[str] = []
-        for alias in list(keep.get('aliases') or []) + [str(drop.get('name') or '')] + list(drop.get('aliases') or []):
+        # 被并掉那条的 name / 别名优先排前面：后面会按上限截断，先放旧的才不会被截掉
+        # （否则 keep 别名本来就多时，被并的旧名丢了，按旧名 match、/兴趣 删 旧名 都会失效）
+        for alias in [str(drop.get('name') or '')] + list(drop.get('aliases') or []) + list(keep.get('aliases') or []):
             norm = _norm_name(alias)
             if not norm or norm in keep_names:
                 continue
             keep_names.add(norm)
             aliases.append(str(alias).strip())
-        keep['aliases'] = aliases[:12]
+        keep['aliases'] = aliases[:20]
+        # kind 取更高的那个（master 优先保），pinned 取或：主人手动加的标签不能被降级
+        keep['kind'] = _merge_kind(keep.get('kind'), drop.get('kind'))
         if drop.get('pinned') and not keep.get('pinned'):
             keep['pinned'] = True
-            keep['kind'] = str(drop.get('kind') or 'master')
         keep['affinity'] = round(max(_as_float(keep.get('affinity'), 0.0), _as_float(drop.get('affinity'), 0.0)), 4)
         keep['mention_count'] = _as_int(keep.get('mention_count'), 0) + _as_int(drop.get('mention_count'), 0)
         keep['last_mention'] = max(_as_float(keep.get('last_mention'), 0.0), _as_float(drop.get('last_mention'), 0.0))
@@ -455,7 +485,7 @@ class InterestStore:
         for name in [str(drop.get('name') or '')] + [str(n) for n in (drop.get('merged_from') or []) if n]:
             if name and name not in merged_from:
                 merged_from.append(name)
-        keep['merged_from'] = merged_from[:10]
+        keep['merged_from'] = merged_from[:20]
         keep['merged_at'] = _now()
 
     def merge_similar(self, threshold: float | None = None) -> list[dict[str, Any]]:
@@ -482,6 +512,8 @@ class InterestStore:
             keep = _merge_winner(first, second)
             drop = second if keep is first else first
             self._absorb_interest(keep, drop, notes_cap)
+            _note_cache_drop(keep)
+            _note_cache_drop(drop)
             try:
                 self.data['interests'].remove(drop)
             except ValueError:
@@ -532,6 +564,7 @@ class InterestStore:
         if not item:
             return False
         self.data['interests'].remove(item)
+        _note_cache_drop(item)
         self.save()
         return True
 
@@ -659,6 +692,7 @@ class InterestStore:
             idle = now - last if last else 0.0
             if int_ttl > 0 and idle > int_ttl:
                 removed_i.append(item['name'])
+                _note_cache_drop(item)
                 changed = True
                 continue
             if decay > 0 and idle > 86400:
@@ -724,6 +758,7 @@ class InterestStore:
         if url is not None:
             note['url'] = str(url).strip()[:500]
         note['edited_at'] = _now()
+        _note_cache_drop(item)
         self.save()
         return True
 
@@ -732,6 +767,7 @@ class InterestStore:
         for idx, note in enumerate(notes):
             if str(note.get('id') or '') == str(note_id or '').strip():
                 notes.pop(idx)
+                _note_cache_drop(item)
                 self.save()
                 return True
         return False
@@ -891,6 +927,9 @@ def _group_key(event, umo: str) -> str:
     except Exception:
         return umo
 
+_WAKE_STALE_SECONDS = 7 * 86400
+_WAKE_KEY_MAX = 500
+
 def _cooldown_ok(store: dict, key: str, cooldown: float) -> bool:
     if cooldown <= 0:
         return True
@@ -899,6 +938,17 @@ def _cooldown_ok(store: dict, key: str, cooldown: float) -> bool:
     if last is not None and now - last < cooldown:
         return False
     store[key] = now
+    # 轻量清理：按群只增不删会一直涨，先丢 7 天没更新的群，再多就删最旧的
+    try:
+        if len(store) > 64:
+            for stale_key, stamp in list(store.items()):
+                if now - _as_float(stamp, 0.0) > _WAKE_STALE_SECONDS:
+                    store.pop(stale_key, None)
+            if len(store) > _WAKE_KEY_MAX:
+                for old_key, _stamp in sorted(store.items(), key=lambda kv: _as_float(kv[1], 0.0))[:len(store) - _WAKE_KEY_MAX]:
+                    store.pop(old_key, None)
+    except Exception:
+        pass
     return True
 
 def _pin_master_related(event, matched) -> None:

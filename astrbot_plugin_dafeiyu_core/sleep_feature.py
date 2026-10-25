@@ -8,7 +8,7 @@
 - 早上（默认 6:00 + 0~45 分钟随机）自己醒来：先回排队的主人私聊和其他私聊，
   再翻一遍睡着之后的群聊，被叫到、提到名字或命中兴趣的才回；
 - 睡眠期间只有主人私聊里的「起床 / 醒醒 / 别睡了 / 强制唤醒」能叫醒；
-- 主人说晚安时她只回一个「安」；
+- 主人说晚安时她只回一个「安」，等主人再回一句「安」才真的去睡（m13907）；
 - 夜里不再打扰主人，备份和整理挪到睡眠时间（backup.hour 默认 3 点）。
 
 实现要点：
@@ -49,6 +49,10 @@ DEFAULTS: dict[str, Any] = {
     'goodnight_reply': '安',
     'goodnight_keywords': ['晚安', '睡了', '去睡', '睡觉', '困了', '我睡', '先睡', '拜拜', '歇了'],
     'wake_keywords': ['起床', '醒醒', '别睡', '不睡', '起来', '强制唤醒', '醒一醒'],
+    'sleep_confirm_enabled': True,
+    'sleep_confirm_seconds': 600,
+    'sleep_confirm_words': ['安'],
+    'sleep_confirm_reply': '嗯',
     'other_goodnight_reply': True,
     'wake_other_private': True,
     'catchup_enabled': True,
@@ -60,6 +64,10 @@ DEFAULTS: dict[str, Any] = {
     'max_pending_per_umo': 20,
     'max_group_buffer': 40,
     'check_interval_seconds': 30,
+    # 一次睡眠最多睡多久（小时）。白天误触晚安时兜底，不让它一觉睡到明天。
+    'max_sleep_hours': 10,
+    # 刚醒不到这么久，不接「晚安/困了」的入睡流程，按正常聊天走。
+    'min_awake_minutes': 30,
     'reply_style': '短句、像 QQ 聊天、不要解释自己在睡觉或刚醒',
 }
 
@@ -96,7 +104,7 @@ def _apply_runtime(config: Any) -> None:
             value = None
         if value is None:
             value = default
-        if key in ('bot_filter', 'goodnight_keywords', 'wake_keywords'):
+        if key in ('bot_filter', 'goodnight_keywords', 'wake_keywords', 'sleep_confirm_words'):
             _RUNTIME[key] = _as_list(value) or list(default)  # type: ignore[arg-type]
         elif isinstance(default, bool):
             _RUNTIME[key] = bool(value)
@@ -190,6 +198,7 @@ def _empty_state() -> dict[str, Any]:
         'wake_at': 0.0,
         'sleep_date': '',
         'wake_date': '',
+        'last_wake_at': 0.0,
         'reason': '',
         'pending_master': {},
         'pending_other': {},
@@ -275,6 +284,20 @@ def _next_wake_ts(now: _dt.datetime) -> float:
     target = now.replace(hour=hour, minute=0, second=0, microsecond=0) + _dt.timedelta(minutes=minute)
     if target <= now:
         target += _dt.timedelta(days=1)
+    # 兜底：不管上面算出多久，都不许一次睡超过 max_sleep_hours。
+    # 否则 6:00~6:45（wake_hour..wake_hour+jitter）之间误触晚安，
+    # 算出来的 target 已经过点、要 +1 天，等于将近 24 小时不说话。
+    try:
+        max_hours = _as_float(_RUNTIME.get('max_sleep_hours'), 10.0)
+        if max_hours <= 0:
+            max_hours = 10.0
+        cap = now + _dt.timedelta(hours=max_hours)
+        if target > cap:
+            logger.info('[dafeiyu_sleep] 这次要睡 %s 小时，按上限压到 %s 小时',
+                        round((target - now).total_seconds() / 3600.0, 1), max_hours)
+            target = cap
+    except Exception as exc:
+        logger.warning('[dafeiyu_sleep] 计算睡眠时长上限失败: %s', exc)
     return target.timestamp()
 
 
@@ -301,10 +324,41 @@ def _mark_awake() -> None:
     _STATE['sleeping'] = False
     _STATE['phase'] = 'awake'
     _STATE['wake_date'] = now.strftime('%Y-%m-%d')
+    _STATE['last_wake_at'] = now.timestamp()
     stats = _STATE.setdefault('stats', {})
     stats['wake_runs'] = int(stats.get('wake_runs') or 0) + 1
     stats['last_wake'] = now.timestamp()
     _save(force=True)
+
+
+def _last_wake_at() -> float:
+    """上一次真正清醒的时间戳；老状态文件里没有就退回 stats.last_wake。"""
+    value = _STATE.get('last_wake_at')
+    if not value:
+        stats = _STATE.get('stats')
+        if isinstance(stats, dict):
+            value = stats.get('last_wake')
+    try:
+        return float(value or 0)
+    except Exception:
+        return 0.0
+
+
+def _min_awake_ok() -> bool:
+    """距离上次清醒不足 min_awake_minutes 时，不接「晚安/困了」的入睡流程。
+
+    白天随口说一句「困了」不该让她直接睡到明天；没有清醒记录时按满足处理。
+    """
+    last = _last_wake_at()
+    if last <= 0:
+        return True
+    try:
+        minutes = _as_float(_RUNTIME.get('min_awake_minutes'), 30.0)
+    except Exception:
+        minutes = 30.0
+    if minutes <= 0:
+        return True
+    return (time.time() - last) >= minutes * 60.0
 
 
 def _spawn(coro: Any) -> None:
@@ -324,8 +378,12 @@ def _text(event: AstrMessageEvent) -> str:
 
 _COMMAND_NAMES = (
     '睡眠', '备份', '上下文', '压缩', '报告', '费用', '兴趣', '主人',
-    'help', '触发', '起床',
+    '群档案', '群知识', '命令', '菜单', '指令',
+    'help', '触发',
 )
+# 注意：'起床' 不是注册命令（只在 /睡眠 起床 的参数里出现），
+# 放在命令表里会让群里的「起床」被当成命令放行、在睡眠期直接回话，
+# 所以这里按 wake_keywords 走，私聊才叫醒。
 
 
 def _is_command(text: str) -> bool:
@@ -355,6 +413,76 @@ def _is_goodnight(text: str) -> bool:
     if len(text) > 12:
         return False
     return _matches(text, list(_RUNTIME.get('goodnight_keywords') or []))
+
+
+def _norm_short(text: str) -> str:
+    drop = ' \t\r\n，。！？!?~～…、·.\u3002\u3001\u3010\u3011\u201c\u201d\u2018\u2019"\'‘’“”'
+    return ''.join(ch for ch in str(text or '') if ch not in drop).strip()
+
+
+def _is_confirm_text(text: str) -> bool:
+    got = _norm_short(text).lower()
+    if not got:
+        return False
+    words = [str(w).strip().lower() for w in (_RUNTIME.get('sleep_confirm_words') or ['安']) if str(w).strip()]
+    return got in words
+
+
+def _confirm_map() -> dict:
+    data = _STATE.get('sleep_confirm')
+    if not isinstance(data, dict):
+        data = {}
+        _STATE['sleep_confirm'] = data
+    return data
+
+
+def _set_confirm(umo: str) -> None:
+    if not umo:
+        return
+    seconds = max(30.0, _as_float(_RUNTIME.get('sleep_confirm_seconds'), 600.0))
+    _confirm_map()[umo] = time.time() + seconds
+    _save(force=True)
+
+
+def _clear_confirm(umo: str) -> None:
+    data = _confirm_map()
+    if umo and data.pop(umo, None) is not None:
+        _save()
+
+
+def _confirm_pending(umo: str) -> bool:
+    if not umo:
+        return False
+    data = _confirm_map()
+    deadline = data.get(umo)
+    if not deadline:
+        return False
+    try:
+        left = float(deadline) - time.time()
+    except Exception:
+        data.pop(umo, None)
+        return False
+    if left <= 0:
+        data.pop(umo, None)
+        _save()
+        logger.info('[dafeiyu_sleep] 说晚安后的等待超时，不再等「安」了: %s', umo)
+        return False
+    return True
+
+
+def _maybe_clear_confirm(event: AstrMessageEvent, umo: str) -> None:
+    """主人说晚安后，只要下一条不是单回「安」，就当没这回事。"""
+    if not _confirm_pending(umo):
+        return
+    try:
+        if not (event.is_private_chat() and _is_master(event)):
+            return
+    except Exception:
+        return
+    if _is_confirm_text(_text(event)):
+        return
+    _clear_confirm(umo)
+    logger.info('[dafeiyu_sleep] 主人没说「安」，先不睡，按正常聊天走: %s', umo)
 
 
 def _is_wake_request(text: str) -> bool:
@@ -469,15 +597,26 @@ def _maybe_block(event: AstrMessageEvent) -> bool:
             return False
     except Exception:
         pass
+    _maybe_clear_confirm(event, umo)
     phase = _current_phase()
     if phase == 'awake':
         return False
     text = _text(event)
+    # 这条消息本身就是确认词（默认「安」）时不能清掉刚 arm 的确认，
+    # 要留给后面的 SleepConfirmFilter 处理；否则「说晚安 → 她回安 → 你回安」
+    # 会在拦截阶段把确认清掉，永远进不了睡眠。
+    if not _is_confirm_text(text):
+        _clear_confirm(umo)
     master = _is_master(event)
     group = _is_group_event(event, umo)
+    try:
+        private = bool(event.is_private_chat())
+    except Exception:
+        private = False
     if master:
-        # 主人的命令和「起床/醒醒」不拦，其它消息睡眠期先排队
-        if _is_command(text) or _is_wake_request(text):
+        # 主人的命令、以及私聊里的「起床/醒醒」不拦，其它消息睡眠期先排队。
+        # 「叫醒」只认私聊：群里说这类话按普通消息排队，和 /睡眠 状态 里写的说明一致。
+        if _is_command(text) or (_is_wake_request(text) and private):
             return False
         if phase == 'quiet':
             return False
@@ -491,10 +630,11 @@ def _maybe_block(event: AstrMessageEvent) -> bool:
         logger.info('[dafeiyu_sleep] 睡着了，主人的消息先排队，早上再回: %s', umo)
         return True
     if phase == 'quiet':
-        if group:
-            _buffer_group(event, umo)
-        else:
-            _push(_STATE.setdefault('pending_other', {}), umo, _item_of(event), 10)
+        # 安静期群里只记不回；但醒来时 _group_candidates 只取 t >= sleep_at，
+        # 这期间记下的群消息本来就永远用不上，还占 group_buffer 的名额，所以不记。
+        if not group:
+            _push(_STATE.setdefault('pending_other', {}), umo, _item_of(event),
+                  int(_RUNTIME.get('max_pending_per_umo', 20)))
         stats = _STATE.setdefault('stats', {})
         stats['quiet_skipped'] = int(stats.get('quiet_skipped') or 0) + 1
         event.set_extra(_EXTRA_GATE, 'quiet')
@@ -507,7 +647,8 @@ def _maybe_block(event: AstrMessageEvent) -> bool:
     if group:
         _buffer_group(event, umo)
     else:
-        _push(_STATE.setdefault('pending_other', {}), umo, _item_of(event), 10)
+        _push(_STATE.setdefault('pending_other', {}), umo, _item_of(event),
+              int(_RUNTIME.get('max_pending_per_umo', 20)))
     stats = _STATE.setdefault('stats', {})
     stats['sleep_skipped'] = int(stats.get('sleep_skipped') or 0) + 1
     event.set_extra(_EXTRA_GATE, 'sleep')
@@ -534,6 +675,10 @@ def _should_goodnight(event: AstrMessageEvent) -> bool:
     text = _text(event)
     if not text or _is_command(text) or _is_wake_request(text):
         return False
+    # 刚醒没多久（默认 30 分钟）不接「困了/晚安」，避免白天随口一句就直接睡过去。
+    if not _min_awake_ok():
+        logger.info('[dafeiyu_sleep] 刚醒没多久，这句晚安先不接，按正常聊天走: %s', umo)
+        return False
     return _is_goodnight(text)
 
 
@@ -555,6 +700,29 @@ def _should_other_goodnight(event: AstrMessageEvent) -> bool:
     return _is_goodnight(_text(event))
 
 
+def _should_sleep_confirm(event: AstrMessageEvent) -> bool:
+    """主人回了「安」：这才真的去睡（m13907）。"""
+    if not _RUNTIME.get('enabled', True):
+        return False
+    if not _RUNTIME.get('sleep_confirm_enabled', True):
+        return False
+    if _current_phase() == 'sleep':
+        return False
+    umo = str(getattr(event, 'unified_msg_origin', '') or '')
+    if not umo or not _bot_match(umo):
+        return False
+    if not _is_master(event):
+        return False
+    try:
+        if not event.is_private_chat():
+            return False
+    except Exception:
+        return False
+    if not _confirm_pending(umo):
+        return False
+    return _is_confirm_text(_text(event))
+
+
 def _should_wake_request(event: AstrMessageEvent) -> bool:
     if not _RUNTIME.get('enabled', True):
         return False
@@ -564,6 +732,13 @@ def _should_wake_request(event: AstrMessageEvent) -> bool:
     if not umo or not _bot_match(umo):
         return False
     if not _is_master(event):
+        return False
+    # 只有主人私聊能叫醒：群里说「不想起床 / 别睡了你」不该在群里被硬叫醒并回话，
+    # 这类消息在 _maybe_block 里按普通消息排队。
+    try:
+        if not event.is_private_chat():
+            return False
+    except Exception:
         return False
     text = _text(event)
     if not text:
@@ -814,7 +989,16 @@ def _tick() -> None:
     slept_today = _STATE.get('sleep_date') == today
     if slept_today or _STATE.get('wake_date') == today:
         return
-    crossed = prev < boundary <= now_ts and (now_ts - boundary) < 900
+    # 固定 900 秒窗口太窄：巡检间隔配到 >=900 秒、或者进程卡了十几分钟，
+    # 这一次跨越就漏掉了，当天再也不会自动入睡。放宽到至少 1 小时
+    # （间隔调得更大时按间隔的 2 倍），重启时 _LAST_TICK 会重置成当前时间，
+    # 所以不会因为重启而误判成「刚跨过入睡点」。
+    try:
+        interval = _as_float(_RUNTIME.get('check_interval_seconds'), 30.0)
+    except Exception:
+        interval = 30.0
+    window = max(3600.0, interval * 2.0)
+    crossed = prev < boundary <= now_ts and (now_ts - boundary) <= window
     if crossed:
         _enter_sleep('auto', notify_master=bool(_RUNTIME.get('notify_on_auto_sleep', True)))
 
@@ -951,6 +1135,16 @@ class SleepGoodnightFilter(CustomFilter):
             return False
 
 
+class SleepConfirmFilter(CustomFilter):
+    """主人回了那个「安」：正式进入睡眠。"""
+
+    def filter(self, event: AstrMessageEvent, cfg: Any) -> bool:
+        try:
+            return _should_sleep_confirm(event)
+        except Exception:
+            return False
+
+
 class SleepOtherGoodnightFilter(CustomFilter):
     """睡着时别人私聊说晚安：也回一个「安」。"""
 
@@ -985,10 +1179,30 @@ class SleepFeature:
         reply = '安'
         try:
             reply = str(_RUNTIME.get('goodnight_reply') or '安')
-            _enter_sleep('goodnight')
-            logger.info('[dafeiyu_sleep] 主人说晚安，去睡了: %s', getattr(event, 'unified_msg_origin', ''))
+            umo = str(getattr(event, 'unified_msg_origin', '') or '')
+            if _RUNTIME.get('sleep_confirm_enabled', True):
+                _set_confirm(umo)
+                logger.info('[dafeiyu_sleep] 主人说晚安，先回「%s」；等主人下一条只发「安」才睡: %s',
+                            reply, umo)
+            else:
+                _enter_sleep('goodnight')
+                logger.info('[dafeiyu_sleep] 主人说晚安，去睡了: %s', umo)
         except Exception as exc:
             logger.warning('[dafeiyu_sleep] 处理晚安失败: %s', exc)
+        _stop(event)
+        yield event.plain_result(reply)
+
+    @filter.custom_filter(SleepConfirmFilter, False)
+    async def sleep_on_confirm(self, event: AstrMessageEvent):
+        reply = '嗯'
+        try:
+            reply = str(_RUNTIME.get('sleep_confirm_reply') or '嗯')
+            umo = str(getattr(event, 'unified_msg_origin', '') or '')
+            _clear_confirm(umo)
+            _enter_sleep('goodnight_confirm')
+            logger.info('[dafeiyu_sleep] 主人回了「安」，这下真去睡了: %s', umo)
+        except Exception as exc:
+            logger.warning('[dafeiyu_sleep] 确认睡眠失败: %s', exc)
         _stop(event)
         yield event.plain_result(reply)
 

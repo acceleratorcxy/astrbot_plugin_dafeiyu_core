@@ -171,13 +171,38 @@ def _peak_ranges_text() -> str:
     )
 
 
-def _parse_holidays(text: str) -> set[str]:
-    out: set[str] = set()
-    raw = str(text or '').replace('；', ',').replace(';', ',').replace('，', ',').replace('/', '-')
+def _parse_holidays(text: str) -> set[tuple[int, int]]:
+    """节假日配置 → {(月, 日)}；支持 2025-10-01、10-01、10/1、20251001 这几种写法。"""
+    out: set[tuple[int, int]] = set()
+    raw = (
+        str(text or '')
+        .replace('；', ',').replace(';', ',').replace('，', ',')
+        .replace('/', '-').replace('.', '-').replace('、', ',')
+    )
     for part in raw.split(','):
         part = part.strip()
-        if len(part) >= 8:
-            out.add(part[:10])
+        if not part:
+            continue
+        bits = [b for b in part.replace(' ', '-').split('-') if b]
+        try:
+            if len(bits) == 1:
+                digits = bits[0]
+                # 20251001 这种连写的也认
+                if len(digits) == 8 and digits.isdigit():
+                    month, day = int(digits[4:6]), int(digits[6:8])
+                else:
+                    raise ValueError(part)
+            elif len(bits) == 2:
+                month, day = int(bits[0]), int(bits[1])
+            elif len(bits) == 3:
+                _year, month, day = int(bits[0]), int(bits[1]), int(bits[2])
+            else:
+                raise ValueError(part)
+            if not (1 <= month <= 12 and 1 <= day <= 31):
+                raise ValueError(part)
+            out.add((month, day))
+        except Exception:
+            logger.debug('[dafeiyu_cost] 节假日配置看不懂，忽略: %r', part)
     return out
 
 
@@ -212,7 +237,7 @@ def is_peak(when=None) -> bool:
         return False
     if _RUNTIME.get('peak_weekdays_only', True) and dt.weekday() >= 5:
         return False
-    if dt.strftime('%Y-%m-%d') in _parse_holidays(_RUNTIME.get('peak_holidays') or ''):
+    if (dt.month, dt.day) in _parse_holidays(_RUNTIME.get('peak_holidays') or ''):
         return False
     minute = dt.hour * 60 + dt.minute
     return any(start <= minute < end for start, end in _peak_ranges())
@@ -265,8 +290,12 @@ def _fmt_tokens(value: int) -> str:
 
 
 def _fmt_time(value) -> str:
+    """库里存的是 UTC 的 naive 时间，显示前统一走 _local_dt 换成北京时间。"""
     if value is None:
         return '--'
+    dt = _local_dt(value)
+    if dt is not None:
+        return dt.strftime('%m-%d %H:%M')
     text = str(value)
     if len(text) >= 16:
         return text[5:16].replace('T', ' ')
@@ -340,7 +369,7 @@ async def overview(plugin, own_only: bool = False) -> dict:
             'offpeak_prices': offpeak_prices,
             'ranges': _peak_ranges_text(),
             'weekdays_only': bool(_RUNTIME.get('peak_weekdays_only', True)),
-            'holidays': sorted(_parse_holidays(_RUNTIME.get('peak_holidays') or '')),
+            'holidays': ['%02d-%02d' % (m, d) for m, d in sorted(_parse_holidays(_RUNTIME.get('peak_holidays') or ''))],
             'peak_requests': 0,
             'offpeak_requests': 0,
             'peak_cost': 0.0,
@@ -385,9 +414,13 @@ async def overview(plugin, own_only: bool = False) -> dict:
     today = {'requests': 0, 'input_other': 0, 'input_cached': 0, 'output': 0, 'tokens': 0, 'cost': 0.0}
     month = {'requests': 0, 'input_other': 0, 'input_cached': 0, 'output': 0, 'tokens': 0, 'cost': 0.0}
     pv = data['peak_valley']
+    include_group = bool(_RUNTIME.get('include_group', True))
     for umo, model, ts, io, ic, out in raw_rows:
         umo = str(umo or '')
         if not umo:
+            continue
+        # 关掉群聊统计时这里就跳过：累计/今日/本月/峰谷和下面的列表口径保持一致
+        if not include_group and _kind_of(umo) == 'group':
             continue
         io = int(io or 0)
         ic = int(ic or 0)

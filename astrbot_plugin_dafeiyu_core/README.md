@@ -14,7 +14,7 @@
 | meme | 主动发表情包工具 `send_meme`（只读 meme_manager 图包） |
 | speaker | 群聊发言记录（带名字、多模态主模型直接看图）+ 按需补上下文 + 主人没头没尾时补别人在聊什么 |
 | cost | 费用统计：按会话算 token 花费（可选峰谷计价），页面/报告/命令三处展示 |
-| sleep | 睡眠模式：1 点起只记不回、2 点后连主人消息也排队、早上 6 点后随机醒来补回；晚安只回「安」；主人可强制叫醒 |
+| sleep | 睡眠模式：1 点起只记不回、2 点后连主人消息也排队、早上 6 点后随机醒来补回；主人说晚安只回「安」，主人也回「安」才真睡；主人可强制叫醒 |
 | knowledge | 群档案知识库：每晚总结每个群的昵称/外号/黑话/近期话题，落 knowledge.json，聊天时自动注入（`/群档案` 命令） |
 | backup | 全量资料备份（人格/兴趣/会话/发言记录/表情包清单…）统一导出导入、睡眠时间自动备份、只留最新 N 份 |
 | context_guard | 私聊快满提醒 + `/压缩`、群聊自动压缩、每会话上下文报告、压缩后从最新备份恢复人格资料 |
@@ -53,10 +53,13 @@
 ## 备份
 
 - 位置：`data/plugin_data/astrbot_plugin_dafeiyu_core/backups/dafeiyu-backup-YYYYmmdd-HHMMSS.json`
-- 默认每晚睡眠时间 3:00 自动备份（趁睡着做，不打扰），只保留最新 3 份（可在页面/配置里改 hour、minute、keep）
+- 默认每晚睡眠时间 3:00 自动备份（趁睡着做，不打扰）。自动备份只保留最新 `keep`（3）份，手动/页面备份另留最新 `manual_keep`（20）份；页面里改 hour/minute/keep 会立刻重启定时循环生效（不用重载插件）
 - 备份完会把整理结果（文件名、人格/档案/兴趣数、保留份数、已压缩会话数、备份列表）**私聊发给主人**
-- 内容（全量，不只人格描述）：人格与人格夹、配置档案（含路由）、本插件 14 段配置、兴趣库（含观察中候选）、群聊发言记录、群档案知识库（knowledge.json）、上下文压缩状态、搜索状态、睡眠状态、**所有会话历史**、meme_manager 图包注册与文件清单（不嵌图片二进制）
-- 恢复范围：人格与人格夹、配置档案与路由、兴趣库、群聊发言记录 / 群档案知识库 / 压缩状态 / 搜索状态 / 睡眠状态、14 段配置；**会话历史与表情包清单只存档不写回**（避免覆盖线上聊天 / 别人的图包，要找回直接看备份 JSON）。
+- 权限：备份目录 0700、备份文件 0600（里面有人格 prompt、会话历史、主人 ID、搜索 key，同机其他账号读不到）
+- 内容（全量，不只人格描述）：人格与人格夹、配置档案（含路由）、本插件 13 段配置、兴趣库（含观察中候选）、群聊发言记录、群档案知识库（knowledge.json）、上下文压缩状态、搜索状态、睡眠状态、**所有会话历史**、meme_manager 图包注册与文件清单（不嵌图片二进制）
+- 恢复范围：人格与人格夹、配置档案与路由、兴趣库、群聊发言记录 / 群档案知识库 / 压缩状态 / 搜索状态 / 睡眠状态、13 段配置；**会话历史与表情包清单只存档不写回**（避免覆盖线上聊天 / 别人的图包，要找回直接看备份 JSON）。
+- 恢复是事务化的：中途出错会回滚并报 `ok=false` + 原因，不会留下「一半新一半旧」；恢复完自动热重载，失败会给出手动重载提示。
+- 时间配置写错（比如 hour=3:00、minute=abc）不会让定时循环崩掉：自动回落 3:00 并打一条 warning。
 - 页面里可「立即备份 / 下载 / 导入 / 恢复 / 删除」；`/备份 恢复 <文件>` 也行
 
 ## 上下文压缩
@@ -194,14 +197,16 @@
 ## 睡眠模式（sleep 段）
 
 - 三个时段：**醒着**（正常）、**安静期**（`quiet_hour` 默认 1 点 → `sleep_hour` 默认 2 点：别人的消息只记不回，主人照常）、**睡着了**（全体消息排队，只有主人指令/叫醒词能过）。
-- 入睡方式：① 主人私聊说晚安类词（晚安/睡了/去睡/困了/先睡…≤12 字）→ 立刻睡并只回一个字「安」；② 到 `sleep_hour` 还没睡 → 自动睡并私聊主人一条「安」；③ `/睡眠 睡`。
-- 醒来：`wake_hour`（6 点）+ 随机 `wake_jitter_minutes`（45 分钟）内自然醒；或主人私聊发 起床/醒醒/别睡/强制唤醒，或 `/睡眠 醒` 强制叫醒。
+- 入睡方式（v2.3.7 起是「对暗号」）：① 主人私聊说晚安类词（晚安/睡了/去睡/困了/先睡…≤12 字）→ 只回一个字「安」，**不睡**；主人下一条**只发「安」**（或 `sleep_confirm_words` 里配的词）才真睡（回「嗯」），不回「安」就按正常聊天走；暗号有效期 `sleep_confirm_seconds`（600 秒），过期作废。② 到 `sleep_hour` 还没睡 → 自动睡并私聊主人一条「安」；③ `/睡眠 睡`。
+- 醒来：`wake_hour`（6 点）+ 随机 `wake_jitter_minutes`（45 分钟）内自然醒；或主人私聊发 起床/醒醒/别睡/强制唤醒，或 `/睡眠 醒` 强制叫醒（叫醒词只在私聊认，群里叫不算）。
+- 睡眠不会无限长：`max_sleep_hours`（10 小时）封顶，跨天算错时自动压到上限并记日志；刚醒 `min_awake_minutes`（30 分钟）内再说晚安不会马上又被哄睡。
 - 醒来补回：主人排队的私聊逐条回；别人的私聊（`wake_other_private`）；每个群只看睡着以后的消息，**被 @ 的、带唤醒词的、聊到兴趣的**才回（`catchup_interest_score`）；最后私聊主人一份「🐋 早上好，我醒了（HH:MM）」摘要。错过醒来时间超过 4 小时只清队列不补回。
 - 睡眠期间别人的私聊说晚安 → 只回一个「安」；群里被 @ 也不当场回，留到早上。
 - 拦截用同步 CustomFilter + `event.stop_event()`（私聊在 AstrBot 里默认无条件唤醒，只能这样拦）；注意唤醒前缀会被剥掉，所以命令识别还要按命令名再认一次。
 - 主动发消息（早安补回/报告）走 `send_to_umo()`：先 `context.send_message`，多 OneBot 连接抛 `ApiNotAvailable` 时再直连协议端（私聊 `send_private_msg`、群聊 `send_group_msg`，显式指定 self_id）。
 - 备份与整理都放在睡眠时间（`backup.hour`=3）；页面「上下文」tab 有「睡眠模式」卡片（现在/排队/群里攒着/预计醒来 + 夜里拦下统计）。
-- 配置（`sleep` 段，21 项）：`enabled` / `bot_filter` / `quiet_hour`(1) / `sleep_hour`(2) / `wake_hour`(6) / `wake_jitter_minutes`(45) / `goodnight_keywords` / `goodnight_reply`(安) / `wake_keywords` / `other_goodnight_reply` / `wake_other_private` / `catchup_enabled` / `catchup_max_groups`(8) / `catchup_max_messages`(30) / `catchup_interest_score`(0.2) / `morning_report` / `notify_on_auto_sleep` / `max_pending_per_umo`(20) / `max_group_buffer`(40) / `check_interval_seconds`(30) / `reply_style`。
+- 配置（`sleep` 段，27 项）：`enabled` / `bot_filter` / `quiet_hour`(1) / `sleep_hour`(2) / `wake_hour`(6) / `wake_jitter_minutes`(45) / `goodnight_keywords` / `goodnight_reply`(安) / `sleep_confirm_enabled`(开) / `sleep_confirm_seconds`(600) / `sleep_confirm_words`(安) / `sleep_confirm_reply`(嗯) / `wake_keywords` / `other_goodnight_reply` / `wake_other_private` / `catchup_enabled` / `catchup_max_groups`(8) / `catchup_max_messages`(30) / `catchup_interest_score`(0.2) / `morning_report` / `notify_on_auto_sleep` / `max_pending_per_umo`(20) / `max_group_buffer`(40) / `max_sleep_hours`(10) / `min_awake_minutes`(30) / `check_interval_seconds`(30) / `reply_style`。
+- 关掉对暗号（回到「说晚安立刻睡」）：`sleep_confirm_enabled=false`。
 - 回滚：关 `sleep.enabled`（或先 `/睡眠 醒`），拦截与巡检立刻停。
 
 ## 人格
@@ -213,7 +218,7 @@
 
 - 上下文用量（`/上下文`）、备份列表/详情（`/备份`）、压缩结果（`/压缩`）、上下文快满提醒、每晚整理报告，**一律只私聊发给主人**。
 - 群里只会收到「…私聊发你了」这类提示，不含任何具体内容；发不出去时群里也只提示一句，绝不外泄。
-- 配置在 `notify` 段：`private_only`（默认开）、`private_umos`（主人私聊会话）、`nightly_report`（默认开）、`warn_in_group`（默认关，建议别开）、`report_only_own_profile`（默认开，汇报只算自己配置档案）、`report_profile_ids`（默认空，留空按机器人平台自动识别）、`report_channel`（默认 `official` = 官方机器人 markdown，可选 `event` / `private`）、`report_platform_id`（默认 `qq_official_bot`）、`report_target`（默认主人 openid）、`report_use_markdown`（默认开）、`report_fallback`（默认开，官方通道失败退回主人私聊）、`command_platforms`（默认 `["qq_official_bot"]`，只有官方机器人能触发指令；填 `*` 不限制）、`command_private_enabled`（默认开，私聊能用指令）、`command_group_enabled`（默认关，群聊能用指令）、`command_master_only`（默认开，只允许主人；关掉后该机器人上所有成员都能用，不建议关）、`command_group_master_ids`（默认空，群聊里额外认作主人的成员 ID —— QQ 官方机器人的群成员 openid 和私聊不一样，群里发 /sid 查）。
+- 配置在 `notify` 段：`private_only`（默认开）、`private_umos`（主人私聊会话）、`nightly_report`（默认开）、`report_only_own_profile`（默认开，汇报只算自己配置档案）、`report_profile_ids`（默认空，留空按机器人平台自动识别）、`report_channel`（默认 `official` = 官方机器人 markdown，可选 `event` / `private`）、`report_platform_id`（默认 `qq_official_bot`）、`report_target`（默认主人 openid）、`report_use_markdown`（默认开）、`report_fallback`（默认开，官方通道失败退回主人私聊）、`command_platforms`（默认 `["qq_official_bot"]`，只有官方机器人能触发指令；填 `*` 不限制）、`command_private_enabled`（默认开，私聊能用指令）、`command_group_enabled`（默认关，群聊能用指令）、`command_master_only`（默认开，只允许主人；关掉后该机器人上所有成员都能用，不建议关）、`command_group_master_ids`（默认空，群聊里额外认作主人的成员 ID —— QQ 官方机器人的群成员 openid 和私聊不一样，群里发 /sid 查）。
 - qq_official（QQ 官方机器人）平台不支持主动消息；主人从 QQ 官方那边触发时会改走 aiocqhttp(aiocqhttp) 私聊兜底。
 
 ## 汇报通道：官方机器人 + markdown 表格
@@ -223,7 +228,20 @@
 - 指令不会再被大模型闲聊复读：`_wrap_command_handlers()` 给所有指令 handler 前置 `event.should_call_llm(True)`，只靠 `stop_event()` 不可靠（LLM 判断早于生成器收尾）。
 - 回滚：`notify.report_channel=private` 回到原主人私聊纯文本；`report_use_markdown=false` 官方机器人也发纯文本。
 
+## 稳定性与容错（v2.4.0）
+
+- 指令平台限制现在也管住 AstrBot 内置指令：`/help` `/reset` `/new` `/stop` `/stats` `/sid` `/name` `/provider` `/set` `/unset` 在非白名单平台（默认只有官方机器人）一律拦下（主人私聊收到提示、其他人静默），避免在个人号上误触发 `/reset` 清会话。
+- `/help` 别名只在「整条消息就是一个命令词」时生效：`help me 看下这个报错`、`帮助我看看这个` 这类正常聊天不会再被当成命令吞掉。
+- 页面保存配置做类型校验与量纲钳制（比例 0~1、百分比 0~100、小时/分钟、份数上限），非法项进 `rejected` 不落盘。
+- 定时循环更抗错：备份时间、巡检间隔写错自动回落默认值并 warning，循环不会因一次异常停掉；群聊压缩循环可重启、异常后 60 秒自愈。
+- 上下文状态按会话保存人格复原块（旧全局格式自动丢弃并警告），状态文件超 200 条按时间淘汰。
+- 群档案整理：每次每群尝试失败不影响其他群，多群时按游标轮转；总结有超时（`summary_timeout_seconds`）。
+- 发言记录：超长 base64 引用换成占位符（不再因单条消息过大丢整条记录），表情包/小黄脸标签与图片下标不再错位；视觉转述有超时（`caption_timeout_seconds`）。
+- 兴趣：合并同名时保留 `master`/`persona` 身份与别名，正则缓存有上限；唤醒缓存会过期清理。
+- 费用：时间统一按北京时间显示，节假日峰谷价配置支持多种写法。
+- 联网搜索：支持手填 `api_key`，状态文件原子写；抓取与搜索各自独立限额（`fetch_daily_limit`）。
+
 ## 配置
 
-统一在插件配置里分 14 段：`owner` / `group_wake` / `humanizer` / `interest` / `meme` / `search` / `speaker` / `cost` / `sleep` / `knowledge` / `backup` / `context_guard` / `notify` / `page`。
-页面「配置」标签也能直接改并保存（保存后自动热重载）。
+统一在插件配置里分 13 段：`owner` / `group_wake` / `humanizer` / `interest` / `meme` / `search` / `speaker` / `cost` / `sleep` / `knowledge` / `backup` / `context_guard` / `notify`。
+页面「配置」标签也能直接改并保存：保存时按 `_conf_schema.json` 逐项校验类型与量纲（写错的项不写入并在返回里列出 `rejected`），改完立即热应用；备份/群聊压缩的开关与时间会立即生效。
