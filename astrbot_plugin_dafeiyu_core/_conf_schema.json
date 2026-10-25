@@ -236,9 +236,9 @@
         "default": 0.35
       },
       "retort_silence_enabled": {
-        "description": "被群里说「没跟你说话/别插嘴/自作多情」后自动安静一会儿",
+        "description": "（默认关）被群里说「没跟你说话/别插嘴」后自动安静一会儿；关掉就完全不理会这类话",
         "type": "bool",
-        "default": true
+        "default": false
       },
       "retort_silence_minutes": {
         "description": "被嫌弃后安静多少分钟（这个群）",
@@ -664,6 +664,21 @@
         "description": "一次回话最多直接给主模型看几张群图（0=不看）",
         "type": "int",
         "default": 3
+      },
+      "sticker_label_enabled": {
+        "description": "记录里区分「照片」和「收藏表情包/小黄脸」（[图片] / [表情包：名字] / [表情：名字]）",
+        "type": "bool",
+        "default": true
+      },
+      "sticker_direct_enabled": {
+        "description": "把别人发的收藏表情包也塞给主模型看原图（默认关：有名字就按名字理解，省 token）",
+        "type": "bool",
+        "default": false
+      },
+      "face_label_enabled": {
+        "description": "记录 QQ 自带小黄脸表情（如 [表情：捂脸]），关掉就完全忽略这类消息",
+        "type": "bool",
+        "default": true
       },
       "image_caption_provider_id": {
         "description": "看图用哪个模型 id（留空=用当前对话的模型）",

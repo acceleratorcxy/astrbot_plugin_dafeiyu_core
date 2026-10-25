@@ -69,14 +69,14 @@ DEFAULTS = {
     'master_reply_probability': 100,
     'master_reply_cooldown_seconds': 6,
     # 社交分寸（治「自作多情」）：不是冲她来的定向发言不随机插话、她说太多就自动让一让、
-    # 被群友明说「没跟你说话/别插嘴」就安静一会儿。
+    # 被群里嫌两句默认不管（m12630：不用设安静期）；开启 retort_silence_enabled 才回退到旧的安静逻辑。
     'random_skip_directed': True,
     'engaged_directed_min_score': 0.6,
     'self_share_enabled': True,
     'self_share_window_seconds': 300,
     'self_share_min_messages': 10,
     'self_share_max_ratio': 0.35,
-    'retort_silence_enabled': True,
+    'retort_silence_enabled': False,
     'retort_silence_minutes': 10,
 }
 
@@ -496,20 +496,23 @@ def _retort_silenced(key: str) -> bool:
 
 
 def _note_retort(text: str, key: str) -> bool:
-    """群友明说她插嘴就安静几分钟（这条本身也不回）。"""
-    if not _RUNTIME.get('retort_silence_enabled', True):
-        return False
+    """群友明说她插嘴：这句不回；默认不设安静期（m12630）。"""
     try:
         if not any(word in (text or '') for word in _RETORT_WORDS):
             return False
-        minutes = _as_float(_RUNTIME.get('retort_silence_minutes'), 10.0)
-        if minutes <= 0:
-            return False
-        _RETORT_UNTIL[key] = time.time() + minutes * 60.0
-        _ENGAGED.pop(key, None)
-        logger.info(
-            '[dafeiyu_group_wake] 群友说「%s」，这个群先安静 %.0f 分钟: %s',
-            (text or '')[:20], minutes, key,
+        if _RUNTIME.get('retort_silence_enabled', False):
+            minutes = _as_float(_RUNTIME.get('retort_silence_minutes'), 10.0)
+            if minutes > 0:
+                _RETORT_UNTIL[key] = time.time() + minutes * 60.0
+                _ENGAGED.pop(key, None)
+                logger.info(
+                    '[dafeiyu_group_wake] 群友说「%s」，这个群先安静 %.0f 分钟: %s',
+                    (text or '')[:20], minutes, key,
+                )
+                return True
+        logger.debug(
+            '[dafeiyu_group_wake] 群友说「%s」，这句不回（不设安静期）: %s',
+            (text or '')[:20], key,
         )
         return True
     except Exception:

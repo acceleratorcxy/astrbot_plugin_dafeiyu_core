@@ -36,6 +36,11 @@ try:  # 协议端内置命令静默词表（例如 aiocqhttp 的 #sl）：这类
 except Exception:
     silent_guard = None
 
+try:  # 图片 / 收藏表情包 / 小黄脸 的区分（OneBot image 段里的 sub_type、summary、emoji_id）
+    from . import media_kind
+except Exception:
+    media_kind = None
+
 PLUGIN_ID = 'astrbot_plugin_dafeiyu_core'
 TZ = timezone(timedelta(hours=8))
 
@@ -65,6 +70,9 @@ DEFAULTS = {
     'image_caption_ttl_minutes': 1440,
     'image_direct_enabled': True,
     'image_direct_max': 3,
+    'sticker_label_enabled': True,
+    'sticker_direct_enabled': False,
+    'face_label_enabled': True,
     'fresh_block_enabled': True,
     'fresh_lines': 4,
     'fresh_minutes': 15,
@@ -258,12 +266,28 @@ def record(event: AstrMessageEvent, text: str | None = None) -> None:
         if not umo or not _bot_match(umo):
             return
         body = (text if text is not None else (event.message_str or '')).strip()
-        image_refs = _image_refs(event) if text is None else []
-        image_refs = [ref for ref in image_refs if len(ref) <= _REF_MAX_CHARS]
-        if not body and not image_refs:
+        raw_infos: list[dict[str, Any]] = []
+        faces: list[str] = []
+        if text is None:
+            if media_kind is not None:
+                raw_infos = media_kind.image_infos(event)
+                if _RUNTIME.get('face_label_enabled', True):
+                    faces = media_kind.face_names(event)
+            else:
+                raw_infos = [{'ref': ref, 'kind': 'photo', 'name': ''} for ref in _image_refs(event)]
+            raw_infos = [info for info in raw_infos if len(str(info.get('ref') or '')) <= _REF_MAX_CHARS]
+        label = ''
+        if media_kind is not None and (raw_infos or faces):
+            label = media_kind.compose_label(
+                raw_infos,
+                faces,
+                bool(_RUNTIME.get('sticker_label_enabled', True)),
+                bool(_RUNTIME.get('face_label_enabled', True)),
+            )
+        if not body and not raw_infos and not faces:
             return
         if not body:
-            body = '[图片]'
+            body = label or '[图片]'
         try:
             group_id = str(event.get_group_id() or '')
         except Exception:
@@ -274,7 +298,11 @@ def record(event: AstrMessageEvent, text: str | None = None) -> None:
         sid = _sender_id(event)
         name = _sender_name(event) or ('主人' if _is_master(event) else '群友')
         max_chars = _as_int(_RUNTIME.get('max_chars'), 40)
-        body = body.replace('\n', ' ').strip()[:max_chars]
+        if label and body != label:
+            room = max(5, max_chars - len(label) - 1)
+            body = (body.replace('\n', ' ').strip()[:room] + ' ' + label).strip()
+        else:
+            body = body.replace('\n', ' ').strip()[:max_chars]
         now = _now()
         bucket = int(now // 30)
         items = _LOG.setdefault(umo, [])
@@ -292,7 +320,10 @@ def record(event: AstrMessageEvent, text: str | None = None) -> None:
             'm': 1 if _is_master(event) else 0,
             'g': 1 if is_group else 0,
             'x': body,
-            'i': image_refs,
+            'i': [str(info.get('ref') or '') for info in raw_infos],
+            'q': [str(info.get('kind') or 'photo') for info in raw_infos],
+            'sn': [str(info.get('name') or '') for info in raw_infos],
+            'fe': list(faces),
         })
         limit = _as_int(_RUNTIME.get('max_log_per_umo'), 40)
         if len(items) > limit:
@@ -402,16 +433,32 @@ async def _entry_line(plugin, umo: str, entry: dict[str, Any], budget: list[int]
     行尾只留 ［图N］ 编号；否则退回「先让视觉模型转述成一句话」。
     """
     line = _line_of(entry)
-    refs = entry.get('i') or []
+    refs = [str(ref) for ref in (entry.get('i') or [])]
     if not refs:
         return line
+    kinds = entry.get('q') or []
+    names = entry.get('sn') or []
+    sticker_direct = bool(_RUNTIME.get('sticker_direct_enabled', False))
+
+    def _kind_at(index: int) -> str:
+        return str(kinds[index]) if index < len(kinds) else 'photo'
+
+    def _name_at(index: int) -> str:
+        return str(names[index]) if index < len(names) else ''
+
+    def _skip(index: int) -> bool:
+        # 收藏表情包有名字就只按名字理解，不占图片额度（省 token，也免得她当照片解说）
+        return _kind_at(index) == 'sticker' and not sticker_direct and bool(_name_at(index))
+
     if direct_refs is not None:
         if not _RUNTIME.get('image_direct_enabled', True):
             return line
         marks: list[str] = []
-        for ref in refs[:2]:
+        for index, ref in enumerate(refs[:2]):
             if budget[0] <= 0:
                 break
+            if _skip(index):
+                continue
             budget[0] -= 1
             direct_refs.append(str(ref))
             marks.append('［图%d］' % len(direct_refs))
@@ -421,9 +468,11 @@ async def _entry_line(plugin, umo: str, entry: dict[str, Any], budget: list[int]
     if not _RUNTIME.get('image_caption_enabled', True):
         return line
     caps: list[str] = []
-    for ref in refs[:2]:
+    for index, ref in enumerate(refs[:2]):
         if budget[0] <= 0:
             break
+        if _skip(index):
+            continue
         budget[0] -= 1
         cap = await _caption_image(plugin, umo, str(ref))
         caps.append(cap or '（图没看清）')
@@ -552,6 +601,11 @@ async def digest_block(event: AstrMessageEvent, plugin) -> tuple[str, list[str]]
         for entry in picked:
             lines.append(await _entry_line(plugin, umo, entry, budget, direct_refs if direct else None))
         lines.append('回答时按这个记录分清是谁说的、在跟谁说话；每个人名字照记录写，别把两个人的话搞混。')
+        if media_kind is not None and _RUNTIME.get('sticker_label_enabled', True):
+            lines.append(
+                '记录里 [图片] 是真人拍的照片/截图；[表情包] 或 [表情包：名字] 是别人发的收藏表情包；'
+                '[表情：名字] 是 QQ 自带小黄脸。表情包别当照片一样解说里面画了什么，按它的情绪接一句就行。'
+            )
         if direct_refs:
             lines.append('记录里的［图1］［图2］是别人发的原图，按编号顺序附在这条消息的图片里，你直接看图理解，别只看文字猜。')
         else:
@@ -697,6 +751,19 @@ class SpeakerFeature:
                     pass
                 req.extra_user_content_parts.append(part)
                 _attach_images(req, refs)
+            if media_kind is not None:
+                sn = media_kind.sticker_names(event, _RUNTIME.get('sticker_label_enabled', True))
+                sn = [name for name in sn if name]
+                if sn:
+                    hint = TextPart(text=(
+                        '对方这条带着表情包（%s），你正常接一句；想配个表情包就用 send_meme 发一张情绪对得上的，'
+                        '别解说表情包里画了啥。' % '、'.join(sn[:2])
+                    ))
+                    try:
+                        hint.mark_as_temp()
+                    except Exception:
+                        pass
+                    req.extra_user_content_parts.append(hint)
             fresh = await fresh_block(event, self)
             if fresh:
                 fpart = TextPart(text=fresh)
