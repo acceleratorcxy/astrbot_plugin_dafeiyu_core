@@ -158,6 +158,21 @@
         "description": "热闹时主动回话概率最多翻几倍",
         "type": "float",
         "default": 3.0
+      },
+      "master_reply_enabled": {
+        "description": "主人在群里说话时优先接话（不用叫名字）",
+        "type": "bool",
+        "default": true
+      },
+      "master_reply_probability": {
+        "description": "主人群聊发言的接话概率（%，会再乘热闹加成）",
+        "type": "float",
+        "default": 85
+      },
+      "master_reply_cooldown_seconds": {
+        "description": "主人连续发言的最小间隔（秒，防刷屏）",
+        "type": "int",
+        "default": 20
       }
     }
   },
@@ -558,6 +573,36 @@
         "description": "疑问句多长以内才补上下文（字数）",
         "type": "int",
         "default": 12
+      },
+      "context_always": {
+        "description": "群里每次回话都带上最近的发言记录（先搞清谁说了什么，再回答）",
+        "type": "bool",
+        "default": true
+      },
+      "image_caption_enabled": {
+        "description": "群里别人发的图片/表情先用视觉模型看一眼再回（不想花钱可以关掉）",
+        "type": "bool",
+        "default": true
+      },
+      "image_caption_provider_id": {
+        "description": "看图用哪个模型 id（留空=用当前对话的模型）",
+        "type": "string",
+        "default": ""
+      },
+      "image_caption_prompt": {
+        "description": "看图的提示词",
+        "type": "string",
+        "default": "用一句中文说清这张图/表情包的内容（有文字就把文字也写出来），不超过60字。"
+      },
+      "image_caption_max": {
+        "description": "一次回话最多看几张图（0=不看）",
+        "type": "int",
+        "default": 3
+      },
+      "image_caption_ttl_minutes": {
+        "description": "同一张图的描述缓存多久（分钟，省费用）",
+        "type": "int",
+        "default": 1440
       }
     }
   },
@@ -783,6 +828,82 @@
         "description": "早上补回时的语气要求（写进提示词）",
         "type": "string",
         "default": "短句、像 QQ 聊天、不要解释自己在睡觉或刚醒"
+      }
+    }
+  },
+  "knowledge": {
+    "description": "🧠 群档案知识库（每晚把群聊里的黑话、群友外号总结下来，她聊天时会自动用）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用群档案知识库",
+        "type": "bool",
+        "default": true
+      },
+      "nightly_enabled": {
+        "description": "每晚自动整理群档案（放在备份之后的睡眠时间）",
+        "type": "bool",
+        "default": true
+      },
+      "nightly_hour": {
+        "description": "每天几点整理群档案（0-23）",
+        "type": "int",
+        "default": 3
+      },
+      "nightly_minute": {
+        "description": "整理群档案的分钟（0-59）",
+        "type": "int",
+        "default": 40
+      },
+      "max_groups": {
+        "description": "每晚最多整理几个群",
+        "type": "int",
+        "default": 20
+      },
+      "max_lines": {
+        "description": "每个群最多拿多少条聊天去总结",
+        "type": "int",
+        "default": 120
+      },
+      "provider_id": {
+        "description": "总结用的模型（留空=当前会话模型）",
+        "type": "string",
+        "default": ""
+      },
+      "inject_enabled": {
+        "description": "她说话时把群档案注入提示词（临时注入，不写历史）",
+        "type": "bool",
+        "default": true
+      },
+      "inject_max_members": {
+        "description": "每次注入最多几条群友称呼对照",
+        "type": "int",
+        "default": 12
+      },
+      "inject_max_slang": {
+        "description": "每次注入最多几条黑话",
+        "type": "int",
+        "default": 10
+      },
+      "inject_max_topics": {
+        "description": "每次注入最多几条最近话题",
+        "type": "int",
+        "default": 5
+      },
+      "retain_days": {
+        "description": "档案保留多少天（0=不过期）",
+        "type": "int",
+        "default": 90
+      },
+      "prompt": {
+        "description": "自定义总结提示词（留空用内置）",
+        "type": "string",
+        "default": ""
+      },
+      "bot_filter": {
+        "description": "只整理这些机器人平台的群（umo 关键字，留空=全部）",
+        "type": "list",
+        "default": []
       }
     }
   },

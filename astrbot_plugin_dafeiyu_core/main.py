@@ -37,7 +37,7 @@ from astrbot.core.platform.astr_message_event import MessageSesion
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 PLUGIN_ID = "astrbot_plugin_dafeiyu_core"
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 REPO = "https://github.com/acceleratorcxy/astrbot_plugin_dafeiyu_core"
 
 _DATA_ROOT = Path(get_astrbot_plugin_data_path())
@@ -70,11 +70,12 @@ speaker_feature = _load_sibling("speaker_feature")
 cost_feature = _load_sibling("cost_feature")
 sleep_feature = _load_sibling("sleep_feature")
 report_feature = _load_sibling("report_feature")
+knowledge_feature = _load_sibling("knowledge_feature")
 core_backup = _load_sibling("core_backup")
 core_context = _load_sibling("core_context")
 core_page = _load_sibling("core_page")
 
-SECTIONS = ("owner", "group_wake", "humanizer", "interest", "meme", "search", "speaker", "cost", "sleep", "backup", "context_guard", "notify", "page")
+SECTIONS = ("owner", "group_wake", "humanizer", "interest", "meme", "search", "speaker", "cost", "sleep", "knowledge", "backup", "context_guard", "notify", "page")
 
 DEFAULT_PRIVATE_UMOS: tuple = ()
 
@@ -101,6 +102,7 @@ HELP_COMMANDS = [
     ("/备份 现在 | 列表 | 恢复 <文件名> | 删除 <文件名>", "全量备份：人格、配置档案、兴趣、会话、发言记录、压缩状态、表情包清单"),
     ("/主人", "看当前主人设置"),
     ("/兴趣 看 | 加 | 删 | 搜 | 记", "兴趣库：手动加、删、搜、记笔记"),
+    ("/群档案 [更新|全部]", "群内黑话和群友昵称档案：每晚自动整理，她聊天时自己会用"),
 ]
 
 HELP_TRIGGERS = [
@@ -210,7 +212,8 @@ class HelpAliasFilter(filter.CustomFilter):
 class Main(Star, owner_feature.OwnerFeature, group_wake_feature.GroupWakeFeature,
            humanizer_feature.HumanizerFeature, interest_feature.InterestFeature,
            meme_feature.MemeFeature, search_feature.SearchFeature,
-           speaker_feature.SpeakerFeature, sleep_feature.SleepFeature):
+           speaker_feature.SpeakerFeature, sleep_feature.SleepFeature,
+           knowledge_feature.KnowledgeFeature):
     PLUGIN_ID = PLUGIN_ID
     VERSION = VERSION
 
@@ -226,6 +229,7 @@ class Main(Star, owner_feature.OwnerFeature, group_wake_feature.GroupWakeFeature
         self._report_feature = report_feature
         self._speaker_feature = speaker_feature
         self._sleep_feature = sleep_feature
+        self._knowledge_feature = knowledge_feature
         self._apply_all_runtime()
 
     # ---------------------------------------------------------------- config
@@ -260,6 +264,7 @@ class Main(Star, owner_feature.OwnerFeature, group_wake_feature.GroupWakeFeature
         cost_feature._apply_runtime(self._section("cost"))
         sleep_feature._apply_runtime(self._section("sleep"))
         report_feature._apply_runtime(self._section("notify"))
+        knowledge_feature._apply_runtime(self._section("knowledge"))
 
     def _cfg(self, key: str, default=None):
         """humanizer_feature 会调用 self._cfg，这里改成读 humanizer 分段。"""
@@ -520,6 +525,12 @@ class Main(Star, owner_feature.OwnerFeature, group_wake_feature.GroupWakeFeature
             sleep_feature.start_background()
         except Exception as exc:
             logger.warning("[dafeiyu_core] 启动睡眠模式失败: %s", exc)
+        try:
+            knowledge_feature._load(self)
+            knowledge_feature._bind_path(self)
+            knowledge_feature.start_background(self)
+        except Exception as exc:
+            logger.warning("[dafeiyu_core] 启动群档案整理失败: %s", exc)
         if bool(self._section("backup").get("enabled", True)):
             self._backup.start()
 
@@ -547,8 +558,24 @@ class Main(Star, owner_feature.OwnerFeature, group_wake_feature.GroupWakeFeature
             self._section("sleep").get("wake_hour", 6),
             self._section("sleep").get("wake_jitter_minutes", 45),
         )
+        try:
+            kstatus = knowledge_feature.status()
+        except Exception:
+            kstatus = {}
+        logger.info(
+            "[dafeiyu_core] 群档案=%s（%s 个群 / 黑话 %s 条 / 每晚 %s:%02s 整理）",
+            self._section("knowledge").get("enabled", True),
+            kstatus.get("groups", 0),
+            kstatus.get("slang", 0),
+            self._section("knowledge").get("nightly_hour", 3),
+            self._section("knowledge").get("nightly_minute", 40),
+        )
 
     async def terminate(self):
+        try:
+            knowledge_feature.stop_background()
+        except Exception:
+            pass
         try:
             sleep_feature.stop_background()
         except Exception:
@@ -667,7 +694,7 @@ class Main(Star, owner_feature.OwnerFeature, group_wake_feature.GroupWakeFeature
         plugin_package = (cls.__module__ or "").rsplit(".", 1)[0]
         if not plugin_package:
             return
-        prefixes = tuple(f"{plugin_package}.{name}" for name in ("owner_feature", "group_wake_feature", "humanizer_feature", "interest_feature", "meme_feature", "search_feature", "speaker_feature", "cost_feature", "sleep_feature"))
+        prefixes = tuple(f"{plugin_package}.{name}" for name in ("owner_feature", "group_wake_feature", "humanizer_feature", "interest_feature", "meme_feature", "search_feature", "speaker_feature", "cost_feature", "sleep_feature", "knowledge_feature"))
         adjusted = 0
         try:
             from astrbot.core.star.star_handler import star_handlers_registry
@@ -874,7 +901,7 @@ class Main(Star, owner_feature.OwnerFeature, group_wake_feature.GroupWakeFeature
         star_manager 随后会按「partial + module_path 命中」再包一层实例，结果仍是绑定方法。
         """
         plugin_package = (self.__class__.__module__ or "").rsplit(".", 1)[0]
-        prefixes = tuple(f"{plugin_package}.{name}" for name in ("owner_feature", "group_wake_feature", "humanizer_feature", "interest_feature", "meme_feature", "search_feature", "speaker_feature", "cost_feature", "sleep_feature"))
+        prefixes = tuple(f"{plugin_package}.{name}" for name in ("owner_feature", "group_wake_feature", "humanizer_feature", "interest_feature", "meme_feature", "search_feature", "speaker_feature", "cost_feature", "sleep_feature", "knowledge_feature"))
         try:
             tmgr = self.context.get_llm_tool_manager()
         except Exception as exc:

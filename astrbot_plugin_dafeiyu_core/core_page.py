@@ -17,7 +17,7 @@ from astrbot.api.web import file_response, request
 
 PLUGIN_ID = "astrbot_plugin_dafeiyu_core"
 
-SECTIONS = ("owner", "group_wake", "humanizer", "interest", "meme", "search", "speaker", "cost", "sleep", "backup", "context_guard", "notify", "page")
+SECTIONS = ("owner", "group_wake", "humanizer", "interest", "meme", "search", "speaker", "cost", "sleep", "knowledge", "backup", "context_guard", "notify", "page")
 
 SECTION_TITLES = {
     "owner": "主人身份与听令",
@@ -29,6 +29,7 @@ SECTION_TITLES = {
     "speaker": "群聊发言记录",
     "cost": "费用计算",
     "sleep": "睡眠模式",
+    "knowledge": "群档案知识库",
     "backup": "全量资料备份",
     "context_guard": "上下文守护",
     "notify": "主人私聊通知",
@@ -505,6 +506,11 @@ def register_page_apis(plugin) -> None:
         except Exception as exc:
             logger.warning("[dafeiyu_core] 页面读取睡眠状态失败: %s", exc)
             status["sleep"] = {}
+        try:
+            status["knowledge"] = plugin._knowledge_feature.status()
+        except Exception as exc:
+            logger.warning("[dafeiyu_core] 页面读取群档案失败: %s", exc)
+            status["knowledge"] = {}
         return {"status": "ok", "data": status}
 
     async def context_compress():

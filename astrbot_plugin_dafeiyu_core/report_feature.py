@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import re
+import sys
 from typing import Any
 
 from astrbot.api import logger
@@ -350,6 +351,29 @@ async def build_model(plugin: Any, result: dict | None = None, top_context: int 
                     ),
                 }
             )
+    try:
+        knowledge = None
+        for name, module in list(sys.modules.items()):
+            if name.endswith("knowledge_feature"):
+                knowledge = module
+                break
+        if knowledge is not None:
+            ks = knowledge.status()
+            if ks.get("enabled"):
+                night.append(
+                    {
+                        "name": "群档案",
+                        "text": "%s 个群 · 成员对照 %s 条 · 黑话 %s 条（最近整理 %s）"
+                        % (
+                            ks.get("groups", 0),
+                            ks.get("members", 0),
+                            ks.get("slang", 0),
+                            (ks.get("last_run") or {}).get("at") or "还没整理",
+                        ),
+                    }
+                )
+    except Exception:
+        pass
     model["night"] = night
 
     store = getattr(plugin, "_interest_store", None)
@@ -556,6 +580,7 @@ def render_markdown(model: dict) -> str:
                 "%s 包 / %s 个文件"
                 % (counts.get("meme_packs", 0), counts.get("meme_files", 0)),
             ],
+            ["群档案", "%s 个群" % counts.get("knowledge_groups", 0)],
         ]
         parts.append("### 📦 资料\n\n" + md_table(["项目", "数量"], rows, "lr"))
     night = model.get("night") or []
@@ -610,6 +635,7 @@ def render_plain(model: dict) -> str:
                         counts.get("context_summaries", 0),
                     ),
                     "  · 表情包 %s 包 / %s 个文件" % (counts.get("meme_packs", 0), counts.get("meme_files", 0)),
+                    "  · 群档案 %s 个群" % counts.get("knowledge_groups", 0),
                 ]
             )
         )

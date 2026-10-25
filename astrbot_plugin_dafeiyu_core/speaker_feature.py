@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.event.filter import CustomFilter
 from astrbot.api.star import Context
 from astrbot.core.agent.message import TextPart
+from astrbot.core.message.components import Image
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 PLUGIN_ID = 'astrbot_plugin_dafeiyu_core'
@@ -50,6 +52,12 @@ DEFAULTS = {
     'context_on_demand': True,
     'context_short_chars': 6,
     'context_question_chars': 12,
+    'context_always': True,
+    'image_caption_enabled': True,
+    'image_caption_provider_id': '',
+    'image_caption_prompt': '用一句中文说清这张图/表情包的内容（有文字就把文字也写出来），不超过60字。',
+    'image_caption_max': 3,
+    'image_caption_ttl_minutes': 1440,
 }
 
 _RUNTIME: dict = dict(DEFAULTS)
@@ -113,6 +121,10 @@ def _apply_runtime(config) -> None:
             'context_question_chars',
         ):
             _RUNTIME[key] = max(1, _as_int(value, int(DEFAULTS[key])))
+        elif key in ('image_caption_max', 'image_caption_ttl_minutes'):
+            _RUNTIME[key] = max(0, _as_int(value, int(DEFAULTS[key])))
+        elif key in ('image_caption_provider_id', 'image_caption_prompt'):
+            _RUNTIME[key] = str(value or '').strip()
         else:
             _RUNTIME[key] = bool(value)
     if not _RUNTIME.get('bot_filter'):
@@ -206,8 +218,11 @@ def record(event: AstrMessageEvent, text: str | None = None) -> None:
         if not umo or not _bot_match(umo):
             return
         body = (text if text is not None else (event.message_str or '')).strip()
-        if not body:
+        image_refs = _image_refs(event) if text is None else []
+        if not body and not image_refs:
             return
+        if not body:
+            body = '[图片]'
         try:
             group_id = str(event.get_group_id() or '')
         except Exception:
@@ -236,6 +251,7 @@ def record(event: AstrMessageEvent, text: str | None = None) -> None:
             'm': 1 if _is_master(event) else 0,
             'g': 1 if is_group else 0,
             'x': body,
+            'i': image_refs,
         })
         limit = _as_int(_RUNTIME.get('max_log_per_umo'), 40)
         if len(items) > limit:
@@ -259,11 +275,84 @@ def _fmt_time(ts: float) -> str:
 
 def _line_of(entry: dict[str, Any]) -> str:
     name = str(entry.get('n') or '群友')
+    stamp = _fmt_time(float(entry.get('t') or 0))
+    body = entry.get('x') or ''
     if _RUNTIME.get('show_master_mark', True) and entry.get('m'):
-        tag = '主人'
-    else:
-        tag = '群友'
-    return '- %s %s（%s）：%s' % (_fmt_time(float(entry.get('t') or 0)), name, tag, entry.get('x') or '')
+        # 主人的群昵称不露给她，统一标成「主人」，免得她跟着叫真名/群昵称。
+        return '- %s 主人：%s' % (stamp, body)
+    return '- %s %s（群友）：%s' % (stamp, name, body)
+
+
+_CAPTION_CACHE: dict[str, tuple[float, str]] = {}
+
+
+def _image_refs(event: AstrMessageEvent) -> list[str]:
+    """取出这条消息里的图片/表情引用（本地路径优先，其次 url / file）。"""
+    refs: list[str] = []
+    try:
+        for comp in event.get_messages():
+            if not isinstance(comp, Image):
+                continue
+            ref = (
+                str(getattr(comp, 'path', '') or '')
+                or str(getattr(comp, 'url', '') or '')
+                or str(getattr(comp, 'file', '') or '')
+            )
+            if ref:
+                refs.append(ref)
+    except Exception:
+        return refs
+    return refs[:2]
+
+
+async def _caption_image(plugin, umo: str, ref: str) -> str:
+    """让视觉模型看一眼这张图/表情，返回一句描述（带缓存）。"""
+    ttl = _as_int(_RUNTIME.get('image_caption_ttl_minutes'), 1440) * 60
+    key = hashlib.md5(ref.encode('utf-8', 'ignore')).hexdigest()
+    hit = _CAPTION_CACHE.get(key)
+    if hit and _now() - hit[0] < ttl:
+        return hit[1]
+    provider = None
+    pid = str(_RUNTIME.get('image_caption_provider_id') or '').strip()
+    try:
+        if pid:
+            provider = plugin.context.get_provider_by_id(pid)
+        if provider is None:
+            provider = plugin.context.get_using_provider(umo)
+    except Exception as exc:
+        logger.debug('[dafeiyu_speaker] 取图片描述模型失败: %s', exc)
+        provider = None
+    if provider is None:
+        return ''
+    prompt = str(_RUNTIME.get('image_caption_prompt') or '').strip() or '用一句中文说清这张图的内容。'
+    try:
+        resp = await provider.text_chat(prompt=prompt, image_urls=[ref])
+    except Exception as exc:
+        logger.info('[dafeiyu_speaker] 图片没看懂: %s', exc)
+        return ''
+    text = str(getattr(resp, 'completion_text', '') or '').strip()
+    text = ' '.join(text.split())[:120]
+    if text:
+        _CAPTION_CACHE[key] = (_now(), text)
+    return text
+
+
+async def _entry_line(plugin, umo: str, entry: dict[str, Any], budget: list[int]) -> str:
+    """一条发言 + 它带的图片描述（一次注入最多描述 image_caption_max 张）。"""
+    line = _line_of(entry)
+    refs = entry.get('i') or []
+    if not refs or not _RUNTIME.get('image_caption_enabled', True):
+        return line
+    caps: list[str] = []
+    for ref in refs[:2]:
+        if budget[0] <= 0:
+            break
+        budget[0] -= 1
+        cap = await _caption_image(plugin, umo, str(ref))
+        caps.append(cap or '（图没看清）')
+    if caps:
+        line += '［图：%s］' % '／'.join(caps)
+    return line
 
 
 def _needs_context(text: str) -> bool:
@@ -282,7 +371,7 @@ def _needs_context(text: str) -> bool:
     return False
 
 
-def digest_block(event: AstrMessageEvent) -> str:
+async def digest_block(event: AstrMessageEvent, plugin) -> str:
     """拼出「最近的群聊发言」临时块（排除本轮这条，它已经作为用户消息进了上下文）。"""
     try:
         if not _RUNTIME.get('enabled', True):
@@ -299,13 +388,16 @@ def digest_block(event: AstrMessageEvent) -> str:
         items = _LOG.get(umo) or []
         if not items:
             return ''
-        if _RUNTIME.get('context_on_demand', True):
-            if _is_master(event):
-                # 主人的「没头没尾」交给 master_context_block 单独补，避免补两遍。
-                return ''
-            if not _needs_context(event.message_str or ''):
-                logger.info('[dafeiyu_speaker] 这句能看懂，不读群聊上下文: %s', umo)
-                return ''
+        if _is_master(event):
+            # 主人的「没头没尾」交给 master_context_block 单独补，避免补两遍。
+            return ''
+        if (
+            _RUNTIME.get('context_on_demand', True)
+            and not _RUNTIME.get('context_always', True)
+            and not _needs_context(event.message_str or '')
+        ):
+            logger.info('[dafeiyu_speaker] 这句能看懂，不读群聊上下文: %s', umo)
+            return ''
         now = _now()
         window = _as_int(_RUNTIME.get('window_minutes'), 120) * 60
         max_lines = _as_int(_RUNTIME.get('max_lines'), 8)
@@ -324,8 +416,11 @@ def digest_block(event: AstrMessageEvent) -> str:
             return ''
         picked.reverse()
         lines = [MARK + '这几条群消息你都在场（按时间先后，含你没回的）：']
-        lines.extend(_line_of(entry) for entry in picked)
-        lines.append('回答时按这个记录分清是谁说的、在跟谁说话；问的是别人说的内容就照记录答，别把两个人的话搞混。')
+        budget = [_as_int(_RUNTIME.get('image_caption_max'), 3)]
+        for entry in picked:
+            lines.append(await _entry_line(plugin, umo, entry, budget))
+        lines.append('回答时按这个记录分清是谁说的、在跟谁说话；每个人名字照记录写，别把两个人的话搞混。')
+        lines.append('记录里带［图：…］的是别人发的图片或表情包，按那个内容理解；先看清这句本身在问什么，别拿之前的话题硬套。')
         logger.info('[dafeiyu_speaker] 这句看不懂，补了 %s 条群聊上下文: %s', len(picked), umo)
         return '\n'.join(lines)
     except Exception as exc:
@@ -333,7 +428,7 @@ def digest_block(event: AstrMessageEvent) -> str:
         return ''
 
 
-def master_context_block(event: AstrMessageEvent) -> str:
+async def master_context_block(event: AstrMessageEvent, plugin) -> str:
     """主人这句可能没头没尾时，把刚才别人在聊的补给她，让她自己猜主人在说哪件事。
 
     判定（只群聊、只主人、非命令）：短句 <= master_context_short_chars，或含指代/疑问词且 <=20 字，
@@ -393,7 +488,9 @@ def master_context_block(event: AstrMessageEvent) -> str:
             MARK_MASTER + '主人这句像是接着刚才的聊天说的，但只看到这一句，看不出指的是哪件事/哪个人。',
             '刚才群里在聊：',
         ]
-        lines.extend(_line_of(entry) for entry in picked)
+        budget = [_as_int(_RUNTIME.get('image_caption_max'), 3)]
+        for entry in picked:
+            lines.append(await _entry_line(plugin, umo, entry, budget))
         lines.append('主人刚说：「%s」' % current)
         lines.append('先看上面别人在聊什么，猜主人指的是哪件事、哪个人，再顺着接；猜不准就直接说没看懂、让主人说清楚，别装懂、别编。')
         logger.info('[dafeiyu_speaker] 主人没头没尾，补了 %s 条上下文: %s', len(picked), umo)
@@ -427,7 +524,7 @@ class SpeakerFeature:
     async def inject_speaker_digest(self, event: AstrMessageEvent, req):
         try:
             record(event)
-            block = digest_block(event)
+            block = await digest_block(event, self)
             if not block:
                 return
             part = TextPart(text=block)
@@ -444,7 +541,7 @@ class SpeakerFeature:
         """主人说话没头没尾时，把刚才别人在聊的补上，让她自己猜主人指什么。"""
         try:
             record(event)
-            block = master_context_block(event)
+            block = await master_context_block(event, self)
             if not block:
                 return
             part = TextPart(text=block)

@@ -58,12 +58,16 @@ DEFAULTS = {
     'lively_window_seconds': 120,
     'lively_min_messages': 6,
     'lively_max_boost': 3.0,
+    'master_reply_enabled': True,
+    'master_reply_probability': 85,
+    'master_reply_cooldown_seconds': 20,
 }
 
 _RUNTIME: dict = dict(DEFAULTS)
 _LAST_WAKE: dict[str, float] = {}
 _LAST_RANDOM: dict[str, float] = {}
 _LAST_ENGAGED: dict[str, float] = {}
+_LAST_MASTER: dict[str, float] = {}
 _ENGAGED: dict[str, dict[str, Any]] = {}
 _RECENT_USER: dict[str, list[dict[str, Any]]] = {}
 _ACTIVITY: dict[str, list[float]] = {}
@@ -117,6 +121,8 @@ def _apply_runtime(config) -> None:
             'engaged_idle_seconds',
             'engaged_max_turns',
             'engaged_cooldown_seconds',
+            'master_reply_probability',
+            'master_reply_cooldown_seconds',
             'lively_window_seconds',
             'lively_min_messages',
             'lively_max_boost',
@@ -162,6 +168,34 @@ def _cooldown_ok(store: dict, key: str, cooldown: float) -> bool:
         return False
     store[key] = now
     return True
+
+
+def _master_ids() -> list[str]:
+    """主人 ID 直接从 owner_feature 的运行时配置读，配置热重载后自动跟着变。"""
+    for name, mod in list(sys.modules.items()):
+        if name == __name__ or not name.endswith('owner_feature'):
+            continue
+        runtime = getattr(mod, '_RUNTIME', None)
+        if isinstance(runtime, dict):
+            try:
+                return [str(item).strip() for item in (runtime.get('master_ids') or []) if str(item).strip()]
+            except Exception:
+                return []
+    return []
+
+
+def _is_master_event(event) -> bool:
+    """这条消息是不是主人发的：先看框架 role，再按 owner 段配置的 ID 兜底。"""
+    try:
+        if event.is_admin():
+            return True
+    except Exception:
+        pass
+    try:
+        sid = str(event.get_sender_id() or '')
+    except Exception:
+        sid = ''
+    return bool(sid) and sid in _master_ids()
 
 
 def _random_roll(event, boost: float = 1.0) -> bool:
@@ -507,6 +541,27 @@ def _should_wake(event) -> bool:
                 event.set_extra(_EXTRA_REASON, 'keyword')
             except Exception:
                 pass
+            return True
+        if text.startswith(('/', '／')):
+            return False
+        if _is_master_event(event) and _RUNTIME.get('master_reply_enabled', True):
+            key = _group_key(event, umo)
+            now_ts = time.time()
+            cooldown = _as_float(_RUNTIME.get('master_reply_cooldown_seconds'), 20.0)
+            last_master = _LAST_MASTER.get(key)
+            if cooldown > 0 and last_master is not None and now_ts - last_master < cooldown:
+                return False
+            boost = _boost_for(event, umo)
+            probability = min(100.0, _as_float(_RUNTIME.get('master_reply_probability'), 85.0) * max(1.0, boost))
+            if probability <= 0 or random.random() * 100.0 >= probability:
+                logger.debug('[dafeiyu_group_wake] 主人说话但这次没掷中（%.0f%%）: %s', probability, key)
+                return False
+            _LAST_MASTER[key] = now_ts
+            try:
+                event.set_extra(_EXTRA_REASON, 'master')
+            except Exception:
+                pass
+            logger.info('[dafeiyu_group_wake] 主人说话，接一句（概率 %.0f%%）: %s', probability, key)
             return True
         if _engaged_active(event, umo):
             # 刚回过这个群、还在盯后续：随机搭话先别抢，交给续聊判断决定要不要接。

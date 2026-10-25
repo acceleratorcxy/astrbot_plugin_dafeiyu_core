@@ -112,6 +112,7 @@ class BackupManager:
             "context_state.json": "context_state",
             "search_state.json": "search_state",
             "sleep_state.json": "sleep_state",
+            "knowledge.json": "knowledge",
             "interests.json": "interests_raw",
         }
         out: dict[str, Any] = {}
@@ -294,6 +295,7 @@ class BackupManager:
             "messages": sum(len(row.get("history") or []) for row in conversation_rows),
             "speaker_lines": sum(len(v) for v in speaker_log.values() if isinstance(v, list)),
             "context_summaries": len(context_state.get("summaries") or {}),
+            "knowledge_groups": len((runtime_state.get("knowledge") or {}).get("groups") or {}),
             "meme_packs": len(meme_packs),
             "meme_files": sum(int(pack.get("file_count") or 0) for pack in meme_packs),
         }
@@ -534,6 +536,7 @@ class BackupManager:
                 ("context_state", "context_state.json"),
                 ("search_state", "search_state.json"),
                 ("sleep_state", "sleep_state.json"),
+                ("knowledge", "knowledge.json"),
             )
             restored = 0
             for key, filename in mapping:

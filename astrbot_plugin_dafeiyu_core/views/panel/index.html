@@ -276,6 +276,7 @@
       <div class="muted" id="ctx-speaker" style="margin-top:4px"></div>
       <div class="muted" id="ctx-engaged" style="margin-top:4px"></div>
       <div class="muted" id="ctx-lively" style="margin-top:4px"></div>
+      <div class="muted" id="ctx-knowledge" style="margin-top:4px"></div>
       <div class="muted" id="ctx-restore" style="margin-top:4px"></div>
       <div class="row" style="margin-top:10px">
         <button id="btn-ctx-refresh">刷新</button>
@@ -1112,6 +1113,10 @@
     $("ctx-lively").textContent = lv.enabled
       ? ("群里热闹加成：窗口 " + (lv.window_seconds || 120) + " 秒 · 超过 " + (lv.min_messages || 6) + " 条开始加 · 最多 ×" + (lv.max_boost || 3) + " · 现在 " + (lv.count || 0) + " 个群正热闹" + (lv.top ? "（" + lv.top + "）" : ""))
       : "群里热闹加成：关着（配置 → 群聊唤醒）。";
+    var kn = ctx.knowledge || {};
+    $("ctx-knowledge").textContent = kn.enabled
+      ? ("群档案知识库：开着 · " + (kn.groups || 0) + " 个群 / 成员对照 " + (kn.members || 0) + " 条 / 黑话 " + (kn.slang || 0) + " 条 · 每晚 " + (kn.hour === undefined ? 3 : kn.hour) + ":" + String(kn.minute === undefined ? 40 : kn.minute).padStart(2, "0") + " 整理" + (kn.updated_at ? "（最近 " + kn.updated_at + "）" : ""))
+      : "群档案知识库：关着（配置 → 群档案知识库）。";
     var restore = ctx.persona_restore;
     $("ctx-restore").textContent = (restore && restore.text)
       ? ("上次人格资料复原：" + fmtTime(restore.at) + "（剩余 " + (restore.turns || 0) + " 轮）")
