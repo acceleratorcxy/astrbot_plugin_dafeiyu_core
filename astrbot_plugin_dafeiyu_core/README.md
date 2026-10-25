@@ -12,7 +12,7 @@
 | interest | 兴趣库（短期观察 → 升级 → 自动清理）、倾向性接话、`/兴趣` 命令与 6 个 LLM 工具 |
 | search | 联网搜索：DeepSeek 官方 Search/Fetch（百度 AI 搜索兜底）、`web_search` / `web_fetch` 工具、频率限制 |
 | meme | 主动发表情包工具 `send_meme`（只读 meme_manager 图包） |
-| speaker | 群聊发言记录（带名字、带图片转述）+ 按需补上下文 + 主人没头没尾时补别人在聊什么 |
+| speaker | 群聊发言记录（带名字、多模态主模型直接看图）+ 按需补上下文 + 主人没头没尾时补别人在聊什么 |
 | cost | 费用统计：按会话算 token 花费（可选峰谷计价），页面/报告/命令三处展示 |
 | sleep | 睡眠模式：1 点起只记不回、2 点后连主人消息也排队、早上 6 点后随机醒来补回；晚安只回「安」；主人可强制叫醒 |
 | knowledge | 群档案知识库：每晚总结每个群的昵称/外号/黑话/近期话题，落 knowledge.json，聊天时自动注入（`/群档案` 命令） |
@@ -129,7 +129,7 @@
 - 每次请求 LLM 前，把最近 `window_minutes`（默认 120 分钟）内最近 `max_lines`（默认 8）条以【群聊发言记录】临时注入（不写历史），所以她能回答「刚才谁说啥了」，也能分清现在是在跟谁说话。
 - 每个群最多记 `max_log_per_umo`（40）条、最多记 `max_umos`（60）个群；`only_group` 默认只记群聊（`record_private` 可开私聊）。
 - 页面「上下文」tab 顶部会显示「群聊发言记录：开着（记了 N 个群 / M 条…）」。
-- **看人看全**：记录里带名字（主人显示「主人」，别人带群昵称），消息里的图片/表情会用视觉模型转述成一句 `［图：…］` 拼在行尾（`image_caption_enabled` 默认开，`image_caption_max` 默认 3 张/次，`image_caption_provider_id` 留空=用当前对话模型，`image_caption_ttl_minutes`=1440 缓存）。`context_always` 默认开=每次回复都带记录；关掉则退回下面「按需」模式。
+- **看人看全**：记录里带名字（主人显示「主人」，别人带群昵称）；别人发的图片/表情默认**把原图直接附在这次请求里**给多模态主模型看（`image_direct_enabled` 默认开、`image_direct_max` 默认 3 张/次），不额外花一次转述的钱；只有主模型看不了图（provider 的 `modalities` 里没有 `image`）时才退回「先用视觉模型转述成一句 `［图：描述］`」（`image_caption_*` 那几个配置，`image_caption_ttl_minutes` 是转述缓存）。`context_always` 默认开=每次回复都带记录；关掉则退回下面「按需」模式。
 - **按需补上下文**（`context_on_demand`，默认开）：只有她真要回、且这句话「看不懂」（指代/短问句/问句结尾，见 `context_short_chars`=6、`context_question_chars`=12）时才把群聊记录注入；能看懂的完整句子不读记录（日志「这句能看懂，不读群聊上下文」）。
 - **主人没头没尾**（`master_context_enabled`，默认开）：群聊里的主人发短句（≤`master_context_short_chars`=8 且含问词代词）或带指代的短句（≤20 字）时，自动补「最近 `master_context_minutes`（30 分钟）内别人在聊的最多 `master_context_lines`（12）条」，让她先猜主人指哪件事再回；猜不准要直说没看懂。
 

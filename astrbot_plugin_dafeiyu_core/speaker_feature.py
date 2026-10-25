@@ -58,6 +58,8 @@ DEFAULTS = {
     'image_caption_prompt': '用一句中文说清这张图/表情包的内容（有文字就把文字也写出来），不超过60字。',
     'image_caption_max': 3,
     'image_caption_ttl_minutes': 1440,
+    'image_direct_enabled': True,
+    'image_direct_max': 3,
 }
 
 _RUNTIME: dict = dict(DEFAULTS)
@@ -77,6 +79,8 @@ _EXTRA_RECORDED = 'dafeiyu_speaker_recorded'
 _LOG: dict[str, list[dict[str, Any]]] = {}
 _STATE_PATH: Path | None = None
 _LAST_SAVE = 0.0
+# 群里别人的图片引用（常是 base64://）只在内存里留最近这点，太长的丢掉，免得吃内存/撑爆记录文件
+_REF_MAX_CHARS = 600_000
 
 
 def _now() -> float:
@@ -121,7 +125,7 @@ def _apply_runtime(config) -> None:
             'context_question_chars',
         ):
             _RUNTIME[key] = max(1, _as_int(value, int(DEFAULTS[key])))
-        elif key in ('image_caption_max', 'image_caption_ttl_minutes'):
+        elif key in ('image_caption_max', 'image_caption_ttl_minutes', 'image_direct_max'):
             _RUNTIME[key] = max(0, _as_int(value, int(DEFAULTS[key])))
         elif key in ('image_caption_provider_id', 'image_caption_prompt'):
             _RUNTIME[key] = str(value or '').strip()
@@ -165,6 +169,18 @@ def _load(plugin) -> None:
         _LOG = {}
 
 
+def _strip_refs(log: dict) -> dict:
+    """落盘时去掉图片引用：base64 太大，重启后旧图也没必要留着。"""
+    out: dict = {}
+    for umo, items in log.items():
+        out[umo] = [
+            {k: v for k, v in entry.items() if k != 'i'}
+            for entry in items
+            if isinstance(entry, dict)
+        ]
+    return out
+
+
 def _save(force: bool = False) -> None:
     global _LAST_SAVE
     now = _now()
@@ -178,7 +194,7 @@ def _save(force: bool = False) -> None:
         payload = {
             'version': 1,
             'updated_at': datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S'),
-            'groups': _LOG,
+            'groups': _strip_refs(_LOG),
         }
         tmp = _STATE_PATH.with_suffix('.tmp')
         tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
@@ -219,6 +235,7 @@ def record(event: AstrMessageEvent, text: str | None = None) -> None:
             return
         body = (text if text is not None else (event.message_str or '')).strip()
         image_refs = _image_refs(event) if text is None else []
+        image_refs = [ref for ref in image_refs if len(ref) <= _REF_MAX_CHARS]
         if not body and not image_refs:
             return
         if not body:
@@ -337,11 +354,47 @@ async def _caption_image(plugin, umo: str, ref: str) -> str:
     return text
 
 
-async def _entry_line(plugin, umo: str, entry: dict[str, Any], budget: list[int]) -> str:
-    """一条发言 + 它带的图片描述（一次注入最多描述 image_caption_max 张）。"""
+def _provider_sees_image(plugin, umo: str) -> bool:
+    """主模型自己能不能看图（provider 的 modalities 里有 image）。"""
+    try:
+        provider = plugin.context.get_using_provider(umo)
+    except Exception:
+        provider = None
+    if provider is None:
+        return False
+    try:
+        modalities = provider.provider_config.get('modalities', None)
+    except Exception:
+        return False
+    if modalities == []:
+        return True  # 框架把空列表当成「没配」，向后兼容为支持
+    return isinstance(modalities, (list, tuple)) and 'image' in modalities
+
+
+async def _entry_line(plugin, umo: str, entry: dict[str, Any], budget: list[int], direct_refs: list[str] | None = None) -> str:
+    """一条发言 + 它带的图片。
+
+    direct_refs 不是 None 时走「把原图直接塞给多模态主模型」：引用收进 direct_refs，
+    行尾只留 ［图N］ 编号；否则退回「先让视觉模型转述成一句话」。
+    """
     line = _line_of(entry)
     refs = entry.get('i') or []
-    if not refs or not _RUNTIME.get('image_caption_enabled', True):
+    if not refs:
+        return line
+    if direct_refs is not None:
+        if not _RUNTIME.get('image_direct_enabled', True):
+            return line
+        marks: list[str] = []
+        for ref in refs[:2]:
+            if budget[0] <= 0:
+                break
+            budget[0] -= 1
+            direct_refs.append(str(ref))
+            marks.append('［图%d］' % len(direct_refs))
+        if marks:
+            line += ' ' + ' '.join(marks)
+        return line
+    if not _RUNTIME.get('image_caption_enabled', True):
         return line
     caps: list[str] = []
     for ref in refs[:2]:
@@ -371,33 +424,36 @@ def _needs_context(text: str) -> bool:
     return False
 
 
-async def digest_block(event: AstrMessageEvent, plugin) -> str:
-    """拼出「最近的群聊发言」临时块（排除本轮这条，它已经作为用户消息进了上下文）。"""
+async def digest_block(event: AstrMessageEvent, plugin) -> tuple[str, list[str]]:
+    """拼出「最近的群聊发言」临时块（排除本轮这条，它已经作为用户消息进了上下文）。
+
+    返回 (文本, 需要直接喂给多模态主模型的图片引用列表)。
+    """
     try:
         if not _RUNTIME.get('enabled', True):
-            return ''
+            return '', []
         umo = getattr(event, 'unified_msg_origin', '') or ''
         if not umo or not _bot_match(umo):
-            return ''
+            return '', []
         try:
             group_id = str(event.get_group_id() or '')
         except Exception:
             group_id = ''
         if _RUNTIME.get('only_group', True) and not group_id and ':GroupMessage:' not in umo:
-            return ''
+            return '', []
         items = _LOG.get(umo) or []
         if not items:
-            return ''
+            return '', []
         if _is_master(event):
             # 主人的「没头没尾」交给 master_context_block 单独补，避免补两遍。
-            return ''
+            return '', []
         if (
             _RUNTIME.get('context_on_demand', True)
             and not _RUNTIME.get('context_always', True)
             and not _needs_context(event.message_str or '')
         ):
             logger.info('[dafeiyu_speaker] 这句能看懂，不读群聊上下文: %s', umo)
-            return ''
+            return '', []
         now = _now()
         window = _as_int(_RUNTIME.get('window_minutes'), 120) * 60
         max_lines = _as_int(_RUNTIME.get('max_lines'), 8)
@@ -413,53 +469,64 @@ async def digest_block(event: AstrMessageEvent, plugin) -> str:
             if len(picked) >= max_lines:
                 break
         if not picked:
-            return ''
+            return '', []
         picked.reverse()
+        direct = bool(_RUNTIME.get('image_direct_enabled', True)) and _provider_sees_image(plugin, umo)
+        budget = [
+            _as_int(_RUNTIME.get('image_direct_max') if direct else _RUNTIME.get('image_caption_max'),
+                    _as_int(DEFAULTS['image_direct_max'] if direct else DEFAULTS['image_caption_max'], 3))
+        ]
+        direct_refs: list[str] = []
         lines = [MARK + '这几条群消息你都在场（按时间先后，含你没回的）：']
-        budget = [_as_int(_RUNTIME.get('image_caption_max'), 3)]
         for entry in picked:
-            lines.append(await _entry_line(plugin, umo, entry, budget))
+            lines.append(await _entry_line(plugin, umo, entry, budget, direct_refs if direct else None))
         lines.append('回答时按这个记录分清是谁说的、在跟谁说话；每个人名字照记录写，别把两个人的话搞混。')
-        lines.append('记录里带［图：…］的是别人发的图片或表情包，按那个内容理解；先看清这句本身在问什么，别拿之前的话题硬套。')
+        if direct_refs:
+            lines.append('记录里的［图1］［图2］是别人发的原图，按编号顺序附在这条消息的图片里，你直接看图理解，别只看文字猜。')
+        else:
+            lines.append('记录里带［图：…］的是别人发的图片或表情包，按那个内容理解；先看清这句本身在问什么，别拿之前的话题硬套。')
         logger.info('[dafeiyu_speaker] 这句看不懂，补了 %s 条群聊上下文: %s', len(picked), umo)
-        return '\n'.join(lines)
+        if direct_refs:
+            logger.info('[dafeiyu_speaker] 直接把 %s 张群图给主模型看: %s', len(direct_refs), umo)
+        return '\n'.join(lines), direct_refs
     except Exception as exc:
         logger.debug('[dafeiyu_speaker] 生成发言记录失败: %s', exc)
-        return ''
+        return '', []
 
 
-async def master_context_block(event: AstrMessageEvent, plugin) -> str:
+async def master_context_block(event: AstrMessageEvent, plugin) -> tuple[str, list[str]]:
     """主人这句可能没头没尾时，把刚才别人在聊的补给她，让她自己猜主人在说哪件事。
 
     判定（只群聊、只主人、非命令）：短句 <= master_context_short_chars，或含指代/疑问词且 <=20 字，
     或问句 <=16 字；并且最近 master_context_minutes 分钟里主人没自己聊过别的。
+    返回 (文本, 需要直接喂给多模态主模型的图片引用列表)。
     """
     try:
         if not _RUNTIME.get('master_context_enabled', True):
-            return ''
+            return '', []
         if not _is_master(event):
-            return ''
+            return '', []
         umo = getattr(event, 'unified_msg_origin', '') or ''
         if not umo or not _bot_match(umo):
-            return ''
+            return '', []
         try:
             group_id = str(event.get_group_id() or '')
         except Exception:
             group_id = ''
         if not group_id and ':GroupMessage:' not in umo:
-            return ''
+            return '', []
         text = (event.message_str or '').strip()
         if not text or text.startswith('/') or len(text) > 40:
-            return ''
+            return '', []
         max_chars = _as_int(_RUNTIME.get('max_chars'), 40)
         short_chars = _as_int(_RUNTIME.get('master_context_short_chars'), 8)
         short = len(text) <= short_chars and any(word in text for word in _QUESTION + _PRONOUN)
         deictic = len(text) <= 20 and any(word in text for word in _DEICTIC)
         if not (short or deictic):
-            return ''
+            return '', []
         items = _LOG.get(umo) or []
         if not items:
-            return ''
+            return '', []
         now = _now()
         window = _as_int(_RUNTIME.get('master_context_minutes'), 30) * 60
         sid = _sender_id(event)
@@ -467,37 +534,61 @@ async def master_context_block(event: AstrMessageEvent, plugin) -> str:
         current = text.replace('\n', ' ')[:max_chars]
         recent = [entry for entry in items if now - float(entry.get('t') or 0) <= window]
         if not recent:
-            return ''
+            return '', []
         own_talk = [
             entry
             for entry in recent
             if entry.get('m') and entry.get('s') == mine and (entry.get('x') or '') != current
         ]
         if own_talk:
-            return ''
+            return '', []
         others = [
             entry
             for entry in recent
             if not entry.get('m') and not (entry.get('s') == mine and (entry.get('x') or '') == current)
         ]
         if not others:
-            return ''
+            return '', []
         limit = _as_int(_RUNTIME.get('master_context_lines'), 12)
         picked = others[-limit:]
+        direct = bool(_RUNTIME.get('image_direct_enabled', True)) and _provider_sees_image(plugin, umo)
+        budget = [
+            _as_int(_RUNTIME.get('image_direct_max') if direct else _RUNTIME.get('image_caption_max'),
+                    _as_int(DEFAULTS['image_direct_max'] if direct else DEFAULTS['image_caption_max'], 3))
+        ]
+        direct_refs: list[str] = []
         lines = [
             MARK_MASTER + '主人这句像是接着刚才的聊天说的，但只看到这一句，看不出指的是哪件事/哪个人。',
             '刚才群里在聊：',
         ]
-        budget = [_as_int(_RUNTIME.get('image_caption_max'), 3)]
         for entry in picked:
-            lines.append(await _entry_line(plugin, umo, entry, budget))
+            lines.append(await _entry_line(plugin, umo, entry, budget, direct_refs if direct else None))
         lines.append('主人刚说：「%s」' % current)
+        if direct_refs:
+            lines.append('记录里的［图1］［图2］是别人发的原图，按编号顺序附在这条消息的图片里，你直接看图理解。')
         lines.append('先看上面别人在聊什么，猜主人指的是哪件事、哪个人，再顺着接；猜不准就直接说没看懂、让主人说清楚，别装懂、别编。')
         logger.info('[dafeiyu_speaker] 主人没头没尾，补了 %s 条上下文: %s', len(picked), umo)
-        return '\n'.join(lines)
+        if direct_refs:
+            logger.info('[dafeiyu_speaker] 直接把 %s 张群图给主模型看: %s', len(direct_refs), umo)
+        return '\n'.join(lines), direct_refs
     except Exception as exc:
         logger.debug('[dafeiyu_speaker] 生成主人上下文失败: %s', exc)
-        return ''
+        return '', []
+
+
+def _attach_images(req, refs: list[str]) -> None:
+    """把别人发的原图挂到这次请求上，多模态主模型就能直接看图（不用先转述）。"""
+    if not refs:
+        return
+    try:
+        existing = list(getattr(req, 'image_urls', None) or [])
+        merged = list(existing)
+        for ref in refs:
+            if ref and ref not in merged:
+                merged.append(ref)
+        req.image_urls = merged
+    except Exception as exc:
+        logger.debug('[dafeiyu_speaker] 附加群图失败: %s', exc)
 
 
 class SpeakerRecordFilter(CustomFilter):
@@ -524,7 +615,7 @@ class SpeakerFeature:
     async def inject_speaker_digest(self, event: AstrMessageEvent, req):
         try:
             record(event)
-            block = await digest_block(event, self)
+            block, refs = await digest_block(event, self)
             if not block:
                 return
             part = TextPart(text=block)
@@ -533,6 +624,7 @@ class SpeakerFeature:
             except Exception:
                 pass
             req.extra_user_content_parts.append(part)
+            _attach_images(req, refs)
         except Exception as exc:
             logger.warning('[dafeiyu_speaker] 注入群聊发言记录失败: %s', exc)
 
@@ -541,7 +633,7 @@ class SpeakerFeature:
         """主人说话没头没尾时，把刚才别人在聊的补上，让她自己猜主人指什么。"""
         try:
             record(event)
-            block = await master_context_block(event, self)
+            block, refs = await master_context_block(event, self)
             if not block:
                 return
             part = TextPart(text=block)
@@ -550,6 +642,7 @@ class SpeakerFeature:
             except Exception:
                 pass
             req.extra_user_content_parts.append(part)
+            _attach_images(req, refs)
         except Exception as exc:
             logger.warning('[dafeiyu_speaker] 注入主人上下文失败: %s', exc)
 

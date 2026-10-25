@@ -580,9 +580,19 @@
         "default": true
       },
       "image_caption_enabled": {
-        "description": "群里别人发的图片/表情先用视觉模型看一眼再回（不想花钱可以关掉）",
+        "description": "主模型看不了图时，先用视觉模型把图片/表情转述成一句话（主模型自己能看图就不用它）",
         "type": "bool",
         "default": true
+      },
+      "image_direct_enabled": {
+        "description": "主模型是多模态时，直接把群里别人发的原图塞给它看（不额外花钱转述，推荐开）",
+        "type": "bool",
+        "default": true
+      },
+      "image_direct_max": {
+        "description": "一次回话最多直接给主模型看几张群图（0=不看）",
+        "type": "int",
+        "default": 3
       },
       "image_caption_provider_id": {
         "description": "看图用哪个模型 id（留空=用当前对话的模型）",
