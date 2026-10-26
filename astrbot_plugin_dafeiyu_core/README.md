@@ -115,13 +115,14 @@
 
 ## 兴趣整理：晚上自动合并相似的（interest 段）
 
-- 每晚整理（默认 03:00 的自动备份循环）会**先合并很像的兴趣**，再备份、再发报告——所以备份里就是合并后的状态，报告里会写「整理时合并 N 组：A ← B」。
-- 判定相似（满足任一，默认阈值 `merge_threshold` = 0.82）：
-  - 名字/别名很像：去掉标点小写后完全相同 = 1.0，一个包含另一个 = 0.9，其余按 difflib 相似度；
-  - 共享 ≥ 2 条来源 URL（记 0.85，防止同一个话题换两种写法堆两条）。
-- 合并规则：人设固定(`persona`) > 主人相关(`master`) > 自动(`auto`)；同优先级再比 pinned、兴趣度、提到次数、创建时间，赢的那条留下；被并掉的名字进 `aliases`，来源记进 `merged_from`，笔记合并去重（上限 `merge_max_notes`），提到次数相加。
-- 每晚最多合并 `merge_max_pairs` 组；`merge_enabled=false` 可整段关掉。
-- 手动整理：页面「兴趣」tab 的「整理合并」按钮，或 `/兴趣 整理`（主人专属）。页面上还会显示上次合并了几组。
+- 每晚整理（默认 03:00 的自动备份循环）会**先整理兴趣库**（合并重复），再备份、再发报告——备份里就是整理后的状态。
+- 整理优先交给**模型**（`merge_use_model`，默认开）：把「正式兴趣 + 临时话题」清单（最多 `merge_max_items`=40 条）发给当前会话用的模型，让它只输出 JSON 合并计划（`{"merge_interests":[{"keep","drop"}], "merge_candidates":[{"keep","drop","into"}]}`），再按计划合并。模型不可用 / 超时（`merge_model_timeout_seconds`=120 秒）/ 输出不是 JSON 时，自动退回规则合并，不影响备份和报告。
+- **临时话题（candidates）也会一起整理**（`merge_candidates_enabled`=true）：同一件事的不同问法合成一条（算「合并临时话题 N 组」）；其实就是某个正式兴趣的，直接并进兴趣（算「并进兴趣 N 个」）。
+- 规则兜底（`merge_use_model=false` 或模型失败）：名字/别名去标点小写后完全相同 = 1.0、一个包含另一个 = 0.9、其余按 difflib；共享 ≥ 2 条来源 URL 记 0.85；正式兴趣阈值 `merge_threshold`（默认 0.82），临时话题阈值 `candidate_merge_threshold`（默认 0.62）。
+- 合并保留优先级：人设固定(`persona`) > 主人相关(`master`) > 自动(`auto`)；被并掉的名字进 `aliases`、来源记进 `merged_from`、记录去重（上限 `merge_max_notes`）、提到次数相加。
+- 一轮最多合并 `merge_max_pairs`（默认 20）组；`merge_enabled=false` 整段关掉。
+- 手动整理：页面「兴趣」tab 的「整理合并」按钮、`/兴趣 整理`（主人专属）。返回文案会区分「模型整理」还是「规则整理」。
+- **人设兴趣不搜也不记**（m15170/m15186）：`kind=persona`（鲸鱼/白饭/摸鱼/表情包这些自带的）默认不自动上网搜（`auto_search_persona=false`），搜到也不写进它的记录（`persona_notes_keep=false`；插件启动和每次保存配置都会清一遍 persona 兴趣下残存的搜索记录，日志「人设兴趣不保留搜索记录，清掉了 N 条」）。主人主动问、模型调 `interest_search` 时照常搜，只是看完不留记录。
 
 ## 主动发表情包（meme 段）
 

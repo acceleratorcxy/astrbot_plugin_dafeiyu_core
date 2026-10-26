@@ -863,12 +863,14 @@ class BackupManager:
                 await asyncio.sleep(delay)
                 if self._stopping:
                     return
-                merge = getattr(self.plugin, "merge_interests_now", None)
-                if merge is not None:
+                organize = getattr(self.plugin, "organize_interests", None)
+                if organize is not None:
                     try:
-                        merged = merge()
-                        if merged:
-                            logger.info("[dafeiyu_core] 晚间整理合并了 %s 组兴趣", len(merged))
+                        res = await organize()
+                        if res.get("ok"):
+                            logger.info("[dafeiyu_core] 晚间整理：合并兴趣 %s 组、临时话题 %s 组、并进兴趣 %s 个（%s）", len(res.get("interests") or []), len(res.get("candidates") or []), len(res.get("promoted") or []), res.get("by") or "rule")
+                        else:
+                            logger.info("[dafeiyu_core] 晚间整理跳过：%s", res.get("message") or "")
                     except Exception as exc:
                         logger.warning("[dafeiyu_core] 晚间整理兴趣失败: %s", exc)
                 if bool(self.cfg.get("enabled", True)):

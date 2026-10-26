@@ -49,7 +49,7 @@ except Exception:
     silent_guard = None
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 PLUGIN_ID = 'astrbot_plugin_dafeiyu_interest'
-DEFAULTS = {'enabled': True, 'bot_filter': [], 'wake_enabled': True, 'wake_probability': 55, 'wake_threshold': 0.45, 'wake_cooldown_seconds': 180, 'wake_related_enabled': True, 'wake_related_probability': 35, 'wake_related_min_score': 0.35, 'master_wake_boost': 1.6, 'master_wake_threshold_scale': 0.7, 'only_group': True, 'hints_enabled': True, 'hints_max_items': 3, 'hints_max_notes': 2, 'auto_search_enabled': True, 'auto_search_min_affinity': 0.7, 'auto_search_cooldown_seconds': 1800, 'auto_search_max_per_day': 6, 'auto_search_top_k': 3, 'max_notes_per_interest': 8, 'candidate_ttl_days': 3, 'promote_mentions': 3, 'interest_ttl_days': 7, 'prune_enabled': True, 'prune_interval_seconds': 3600, 'affinity_decay_per_day': 0.02, 'merge_enabled': True, 'merge_threshold': 0.82, 'merge_max_notes': 12, 'merge_max_pairs': 20}
+DEFAULTS = {'enabled': True, 'bot_filter': [], 'wake_enabled': True, 'wake_probability': 55, 'wake_threshold': 0.45, 'wake_cooldown_seconds': 180, 'wake_related_enabled': True, 'wake_related_probability': 35, 'wake_related_min_score': 0.35, 'master_wake_boost': 1.6, 'master_wake_threshold_scale': 0.7, 'only_group': True, 'hints_enabled': True, 'hints_max_items': 3, 'hints_max_notes': 2, 'auto_search_enabled': True, 'auto_search_min_affinity': 0.7, 'auto_search_cooldown_seconds': 1800, 'auto_search_max_per_day': 6, 'auto_search_top_k': 3, 'max_notes_per_interest': 8, 'candidate_ttl_days': 3, 'promote_mentions': 3, 'interest_ttl_days': 7, 'prune_enabled': True, 'prune_interval_seconds': 3600, 'affinity_decay_per_day': 0.02, 'merge_enabled': True, 'merge_threshold': 0.82, 'merge_max_notes': 12, 'merge_max_pairs': 20, 'merge_use_model': True, 'merge_model_timeout_seconds': 120, 'merge_max_items': 40, 'merge_candidates_enabled': True, 'candidate_merge_threshold': 0.62, 'auto_search_persona': False, 'persona_notes_keep': False}
 SEED_INTERESTS = [{'name': '鲸鱼', 'aliases': ['鲸', '小鲸鱼', 'whale'], 'affinity': 0.82}, {'name': '白饭', 'aliases': ['米饭', '干饭', '大米饭'], 'affinity': 0.66}, {'name': '摸鱼', 'aliases': ['偷懒', '划水', '摆烂'], 'affinity': 0.6}, {'name': '表情包', 'aliases': ['梗图', 'meme'], 'affinity': 0.58}]
 BAIDU_SEARCH_URL = 'https://qianfan.baidubce.com/v2/ai_search/web_search'
 TZ = timezone(timedelta(hours=8))
@@ -106,11 +106,13 @@ def _apply_runtime(config) -> None:
             _RUNTIME[key] = max(0.0, min(1.0, _as_float(value, float(DEFAULTS[key]))))
         elif key in ('wake_cooldown_seconds', 'auto_search_min_affinity', 'auto_search_cooldown_seconds'):
             _RUNTIME[key] = _as_float(value, float(DEFAULTS[key]))
-        elif key in ('hints_max_items', 'hints_max_notes', 'auto_search_max_per_day', 'auto_search_top_k', 'max_notes_per_interest', 'candidate_ttl_days', 'promote_mentions', 'interest_ttl_days', 'prune_interval_seconds', 'merge_max_notes', 'merge_max_pairs'):
+        elif key in ('hints_max_items', 'hints_max_notes', 'auto_search_max_per_day', 'auto_search_top_k', 'max_notes_per_interest', 'candidate_ttl_days', 'promote_mentions', 'interest_ttl_days', 'prune_interval_seconds', 'merge_max_notes', 'merge_max_pairs', 'merge_model_timeout_seconds', 'merge_max_items'):
             _RUNTIME[key] = _as_int(value, int(DEFAULTS[key]))
         elif key == 'affinity_decay_per_day':
             _RUNTIME[key] = max(0.0, _as_float(value, float(DEFAULTS[key])))
         elif key == 'merge_threshold':
+            _RUNTIME[key] = max(0.5, min(1.0, _as_float(value, float(DEFAULTS[key]))))
+        elif key == 'candidate_merge_threshold':
             _RUNTIME[key] = max(0.5, min(1.0, _as_float(value, float(DEFAULTS[key]))))
         else:
             _RUNTIME[key] = bool(value)
@@ -541,6 +543,137 @@ class InterestStore:
         recent = stats.get('merges') if isinstance(stats.get('merges'), list) else []
         return {'last': last, 'total': _as_int(stats.get('merged_total'), 0), 'recent': recent[-5:], 'enabled': bool(_RUNTIME.get('merge_enabled', True)), 'threshold': _as_float(_RUNTIME.get('merge_threshold'), 0.82)}
 
+    # ---------------------------------------------- 临时话题：合并 / 并进兴趣
+    @staticmethod
+    def _candidate_names(cand: dict[str, Any]) -> list[str]:
+        return [str(cand.get('name') or ''), *_as_list(cand.get('aliases'))]
+
+    @staticmethod
+    def _cand_pair_score(a, b) -> float:
+        """两个临时话题有多像：名字/别名最大相似度；共享两条来源链接算很像。"""
+        best = 0.0
+        for x in InterestStore._candidate_names(a):
+            for y in InterestStore._candidate_names(b):
+                best = max(best, _name_similarity(x, y))
+        urls_a = {str(n.get('url') or '') for n in (a.get('notes') or []) if isinstance(n, dict) and n.get('url')}
+        urls_b = {str(n.get('url') or '') for n in (b.get('notes') or []) if isinstance(n, dict) and n.get('url')}
+        if urls_a and urls_b and len(urls_a & urls_b) >= 2:
+            best = max(best, 0.9)
+        return best
+
+    def _absorb_candidate(self, keep: dict[str, Any], drop: dict[str, Any]) -> None:
+        """把重复的临时话题并进另一个临时话题（别名/次数/记录都并进去）。"""
+        names = {_norm_name(n) for n in self._candidate_names(keep)}
+        aliases = list(_as_list(keep.get('aliases')))
+        for alias in [str(drop.get('name') or '')] + _as_list(drop.get('aliases')):
+            norm = _norm_name(alias)
+            if not norm or norm in names:
+                continue
+            names.add(norm)
+            aliases.append(str(alias).strip())
+        keep['aliases'] = aliases[:20]
+        keep['mentions'] = _as_int(keep.get('mentions'), 0) + _as_int(drop.get('mentions'), 0)
+        keep['first_seen'] = min(_as_float(keep.get('first_seen'), _now()), _as_float(drop.get('first_seen'), _now()))
+        keep['last_seen'] = max(_as_float(keep.get('last_seen'), 0.0), _as_float(drop.get('last_seen'), 0.0))
+        notes = [n for n in (_as_list(keep.get('notes')) + _as_list(drop.get('notes'))) if isinstance(n, dict)]
+        keep['notes'] = InterestStore._dedupe_notes(notes, 4)
+
+    def absorb_candidate_into_interest(self, item: dict[str, Any], cand: dict[str, Any]) -> None:
+        """临时话题其实就是某个正式兴趣：别名/次数/记录并进兴趣，临时话题删掉。"""
+        names = {_norm_name(item.get('name'))} | {_norm_name(a) for a in _as_list(item.get('aliases'))}
+        aliases = list(_as_list(item.get('aliases')))
+        for alias in [str(cand.get('name') or '')] + _as_list(cand.get('aliases')):
+            norm = _norm_name(alias)
+            if not norm or norm in names:
+                continue
+            names.add(norm)
+            aliases.append(str(alias).strip())
+        item['aliases'] = aliases[:20]
+        item['mention_count'] = _as_int(item.get('mention_count'), 0) + _as_int(cand.get('mentions'), 0)
+        item['last_mention'] = max(_as_float(item.get('last_mention'), 0.0), _as_float(cand.get('last_seen'), 0.0))
+        item['last_seen'] = max(_as_float(item.get('last_seen'), 0.0), _as_float(cand.get('last_seen'), 0.0))
+        notes = [n for n in (_as_list(item.get('notes')) + _as_list(cand.get('notes'))) if isinstance(n, dict)]
+        item['notes'] = self._dedupe_notes(notes, _as_int(_RUNTIME.get('max_notes_per_interest'), 8))
+        _note_cache_drop(item)
+        try:
+            self.data['candidates'].remove(cand)
+        except ValueError:
+            pass
+
+    def merge_candidates_similar(self, threshold: float | None = None) -> list[dict[str, Any]]:
+        """把重复的临时话题合并（模型不可用时的兜底规则）。"""
+        limit = _as_float(threshold if threshold is not None else _RUNTIME.get('candidate_merge_threshold'), 0.62)
+        limit = max(0.5, min(1.0, limit))
+        merged: list[dict[str, Any]] = []
+        for _ in range(max(1, _as_int(_RUNTIME.get('merge_max_pairs'), 20))):
+            cands = list(self.candidates())
+            if len(cands) < 2:
+                break
+            best = None
+            for i in range(len(cands)):
+                for j in range(i + 1, len(cands)):
+                    score = self._cand_pair_score(cands[i], cands[j])
+                    if score >= limit and (best is None or score > best[0]):
+                        best = (score, i, j)
+            if best is None:
+                break
+            score, i, j = best
+            keep, drop = cands[i], cands[j]
+            if _as_int(drop.get('mentions'), 0) > _as_int(keep.get('mentions'), 0):
+                keep, drop = drop, keep
+            self._absorb_candidate(keep, drop)
+            try:
+                self.data['candidates'].remove(drop)
+            except ValueError:
+                pass
+            record = {'at': _now(), 'keep': str(keep.get('name') or ''), 'drop': str(drop.get('name') or ''), 'score': round(float(score), 2), 'type': 'candidate'}
+            merged.append(record)
+            logger.info('[dafeiyu_interest] 临时话题合并：「%s」←「%s」（相似度 %.2f）', record['keep'], record['drop'], score)
+        if merged:
+            self.save()
+        return merged
+
+    def promote_similar_candidates(self, threshold: float | None = None) -> list[dict[str, Any]]:
+        """临时话题其实就是某个正式兴趣时，并进兴趣（兜底规则）。"""
+        limit = _as_float(threshold if threshold is not None else _RUNTIME.get('candidate_merge_threshold'), 0.62)
+        limit = max(0.5, min(1.0, limit))
+        promoted: list[dict[str, Any]] = []
+        for cand in list(self.candidates()):
+            best = None
+            for item in self.interests():
+                score = _merge_pair_score(item, cand)
+                if score >= limit and (best is None or score > best[0]):
+                    best = (score, item)
+            if best is None:
+                continue
+            score, item = best
+            self.absorb_candidate_into_interest(item, cand)
+            record = {'at': _now(), 'keep': str(item.get('name') or ''), 'drop': str(cand.get('name') or ''), 'score': round(float(score), 2), 'type': 'candidate_into_interest'}
+            promoted.append(record)
+            logger.info('[dafeiyu_interest] 临时话题并进兴趣：「%s」←「%s」', record['keep'], record['drop'])
+        if promoted:
+            self.save()
+        return promoted
+
+    def strip_persona_notes(self) -> int:
+        """人设固定的兴趣不保留搜索记录（m15170/m15186）。"""
+        removed = 0
+        changed = False
+        for item in self.interests():
+            if str(item.get('kind') or '') != 'persona':
+                continue
+            notes = _as_list(item.get('notes'))
+            if not notes:
+                continue
+            removed += len(notes)
+            item['notes'] = []
+            _note_cache_drop(item)
+            changed = True
+        if changed:
+            self.save()
+            logger.info('[dafeiyu_interest] 人设兴趣不保留搜索记录，清掉了 %s 条', removed)
+        return removed
+
     def add(self, name: str, aliases=None, affinity: float=0.6, pinned: bool=False, kind: str='auto') -> dict[str, Any]:
         item = self.get_by_name(name)
         if item:
@@ -849,6 +982,9 @@ async def _auto_search_for(item: dict[str, Any]) -> None:
     """后台搜索一个兴趣并记录结果。"""
     if _STORE is None:
         return
+    # 人设固定的兴趣不主动搜（m15170/m15186：不问就不搜、也不留记录）
+    if str(item.get('kind') or '') == 'persona' and not bool(_RUNTIME.get('auto_search_persona')):
+        return
     try:
         query = f'{item['name']} 冷知识'
         results = await _baidu_search(query, _as_int(_RUNTIME.get('auto_search_top_k'), 3))
@@ -881,6 +1017,8 @@ def _schedule_auto_search(event, matched: list[dict[str, Any]]) -> None:
         for item in matched:
             if item.get('affinity', 0.0) < min_affinity:
                 continue
+            if str(item.get('kind') or '') == 'persona' and not bool(_RUNTIME.get('auto_search_persona')):
+                continue
             if now - item.get('last_search', 0.0) < cooldown:
                 continue
             if max_per_day > 0 and _STORE.searches_today() >= max_per_day:
@@ -894,6 +1032,256 @@ def _schedule_auto_search(event, matched: list[dict[str, Any]]) -> None:
             return
     except Exception as exc:
         logger.debug('[dafeiyu_interest] 调度搜索失败: %s', exc)
+
+# ---------------------------------------------- 整理兴趣（模型优先，规则兜底）
+def _one_line(text: Any, limit: int = 60) -> str:
+    return ' '.join(str(text or '').split())[:limit]
+
+def _organize_material(interests, candidates, max_items: int = 40):
+    """给模型看的清单：正式兴趣 + 临时话题。"""
+    rows_i = []
+    for index, item in enumerate(list(interests)[:max(1, max_items)], 1):
+        aliases = '、'.join(_as_list(item.get('aliases'))[:5]) or '无'
+        kind = str(item.get('kind') or '')
+        tag = '人设固定' if kind == 'persona' else ('主人相关' if kind == 'master' else '自动')
+        rows_i.append('%s. %s｜别名: %s｜提到 %s 次｜%s' % (index, _one_line(item.get('name'), 30), aliases, _as_int(item.get('mention_count'), 0), tag))
+    rows_c = []
+    for index, cand in enumerate(list(candidates)[:max(1, max_items)], 1):
+        sources = '、'.join(sorted({_one_line(n.get('source'), 10) for n in (cand.get('notes') or []) if isinstance(n, dict) and n.get('source')})) or '聊到'
+        rows_c.append('c%s. %s｜提到 %s 次｜来源: %s' % (index, _one_line(cand.get('name'), 30), _as_int(cand.get('mentions'), 0), sources))
+    return rows_i, rows_c
+
+def _organize_prompt(rows_i, rows_c, max_ops: int) -> str:
+    lines = ['你在整理一个聊天机器人的兴趣库，只做去重合并，不要发明新兴趣。', '', '【正式兴趣】']
+    lines.extend(rows_i or ['（空）'])
+    lines.append('')
+    lines.append('【临时话题（还没收进兴趣库，聊得多了才升级）】')
+    lines.extend(rows_c or ['（空）'])
+    lines.append('')
+    lines.append('规则：')
+    lines.append('1. 只有同一件事的不同说法才合并（比如「S16 瑞士轮抽签」和「S16瑞士轮 抽签结果」是一件事）；只是相关、先后、不同场次或不同人的不要合并。')
+    lines.append('2. 正式兴趣之间只合并明显是同一个东西的，拿不准就别合并。')
+    lines.append('3. 临时话题如果其实就是某个正式兴趣（说法不同也算），把它并进那个正式兴趣。')
+    lines.append('4. 临时话题之间是同一件事的，合并成一条。')
+    lines.append('5. 保留更常用、更完整的那个名字。')
+    lines.append('6. 最多输出 %s 组操作，宁少勿错。' % max_ops)
+    lines.append('')
+    lines.append('只输出 JSON，不要解释，不要 markdown 围栏。格式：')
+    lines.append('{"merge_interests": [{"keep": "保留的名字", "drop": ["要并进去的名字"]}], "merge_candidates": [{"keep": "保留的名字", "drop": ["要并进去的名字"], "into": "并进哪个正式兴趣，留空表示临时话题之间合并"}]}')
+    lines.append('没有可合并的就输出 {"merge_interests": [], "merge_candidates": []}。')
+    return chr(10).join(lines)
+
+def _parse_plan(text: str) -> dict[str, Any]:
+    raw = str(text or '').strip()
+    if not raw:
+        return {}
+    fence = chr(96) * 3
+    if fence in raw:
+        for part in raw.split(fence):
+            part = part.strip()
+            if part.lower().startswith('json'):
+                part = part[4:].strip()
+            if part.startswith('{'):
+                raw = part
+                break
+    start = raw.find('{')
+    end = raw.rfind('}')
+    if start < 0 or end <= start:
+        return {}
+    try:
+        data = json.loads(raw[start:end + 1])
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+def _find_interest(name):
+    if _STORE is None:
+        return None
+    text = str(name or '').strip()
+    if not text:
+        return None
+    item = _STORE.get_by_name(text)
+    if item is not None:
+        return item
+    norm = _norm_name(text)
+    for item in _STORE.interests():
+        for cand in _item_names(item):
+            if _norm_name(cand) == norm:
+                return item
+    return None
+
+def _find_candidate(name):
+    if _STORE is None:
+        return None
+    text = str(name or '').strip()
+    if not text:
+        return None
+    cand = _STORE.get_candidate(text)
+    if cand is not None:
+        return cand
+    norm = _norm_name(text)
+    for cand in _STORE.candidates():
+        for item in [str(cand.get('name') or '')] + _as_list(cand.get('aliases')):
+            if _norm_name(item) == norm:
+                return cand
+    return None
+
+def _as_name_list(value):
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    return [str(v).strip() for v in value if str(v or '').strip()]
+
+def _apply_model_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {'interests': [], 'candidates': [], 'promoted': []}
+    if _STORE is None or not isinstance(plan, dict):
+        return result
+    notes_cap = _as_int(_RUNTIME.get('merge_max_notes'), 12)
+    max_ops = max(1, _as_int(_RUNTIME.get('merge_max_pairs'), 20))
+    for row in (plan.get('merge_interests') or [])[:max_ops]:
+        if not isinstance(row, dict):
+            continue
+        keep = _find_interest(row.get('keep'))
+        if keep is None:
+            continue
+        for name in _as_name_list(row.get('drop'))[:max_ops]:
+            drop = _find_interest(name)
+            if drop is None or drop is keep:
+                continue
+            winner = _merge_winner(keep, drop)
+            loser = drop if winner is keep else keep
+            _STORE._absorb_interest(winner, loser, notes_cap)
+            _note_cache_drop(winner)
+            _note_cache_drop(loser)
+            try:
+                _STORE.data['interests'].remove(loser)
+            except ValueError:
+                pass
+            keep = winner
+            record = {'at': _now(), 'keep': str(winner.get('name') or ''), 'drop': str(loser.get('name') or ''), 'score': 1.0, 'by': 'model'}
+            result['interests'].append(record)
+            logger.info('[dafeiyu_interest] 模型合并兴趣：「%s」←「%s」', record['keep'], record['drop'])
+    if bool(_RUNTIME.get('merge_candidates_enabled', True)):
+        for row in (plan.get('merge_candidates') or [])[:max_ops]:
+            if not isinstance(row, dict):
+                continue
+            into = _find_interest(row.get('into')) if str(row.get('into') or '').strip() else None
+            keep_c = _find_candidate(row.get('keep'))
+            drops = _as_name_list(row.get('drop'))[:max_ops]
+            if into is not None:
+                targets = [keep_c] if keep_c is not None else []
+                for name in drops:
+                    cand = _find_candidate(name)
+                    if cand is not None:
+                        targets.append(cand)
+                for cand in targets:
+                    try:
+                        _STORE.absorb_candidate_into_interest(into, cand)
+                    except ValueError:
+                        continue
+                    record = {'keep': str(into.get('name') or ''), 'drop': str(cand.get('name') or '')}
+                    result['promoted'].append(record)
+                    logger.info('[dafeiyu_interest] 模型把临时话题并进兴趣：「%s」←「%s」', record['keep'], record['drop'])
+                continue
+            if keep_c is None:
+                continue
+            for name in drops:
+                drop_c = _find_candidate(name)
+                if drop_c is None or drop_c is keep_c:
+                    continue
+                _STORE._absorb_candidate(keep_c, drop_c)
+                try:
+                    _STORE.data['candidates'].remove(drop_c)
+                except ValueError:
+                    pass
+                record = {'keep': str(keep_c.get('name') or ''), 'drop': str(drop_c.get('name') or '')}
+                result['candidates'].append(record)
+                logger.info('[dafeiyu_interest] 模型合并临时话题：「%s」←「%s」', record['keep'], record['drop'])
+    stats = _STORE.data.setdefault('stats', {})
+    changed = result['interests'] or result['candidates'] or result['promoted']
+    if changed:
+        history = stats.get('merges')
+        if not isinstance(history, list):
+            history = []
+        history.extend([dict(r, type='interest') for r in result['interests']])
+        history.extend([dict(r, type='candidate') for r in result['candidates']])
+        stats['merges'] = history[-30:]
+        stats['last_merge'] = {'at': _now(), 'count': len(result['interests']), 'pairs': (result['interests'] + result['candidates'])[-6:], 'by': 'model'}
+        stats['merged_total'] = _as_int(stats.get('merged_total'), 0) + len(result['interests'])
+        stats['merged_candidates_total'] = _as_int(stats.get('merged_candidates_total'), 0) + len(result['candidates'])
+        _STORE.save()
+    return result
+
+def _apply_rule_plan() -> dict[str, Any]:
+    result: dict[str, Any] = {'interests': [], 'candidates': [], 'promoted': []}
+    if _STORE is None:
+        return result
+    result['interests'] = _STORE.merge_similar()
+    if bool(_RUNTIME.get('merge_candidates_enabled', True)):
+        result['promoted'] = _STORE.promote_similar_candidates()
+        result['candidates'] = _STORE.merge_candidates_similar()
+    return result
+
+def _log_summary(res: dict[str, Any]) -> None:
+    try:
+        logger.info('[dafeiyu_interest] 兴趣整理（%s）：合并兴趣 %s 组、临时话题 %s 组、并进兴趣 %s 个', res.get('by') or 'rule', len(res.get('interests') or []), len(res.get('candidates') or []), len(res.get('promoted') or []))
+    except Exception:
+        pass
+
+async def organize(plugin, umo: str | None = None) -> dict[str, Any]:
+    """整理兴趣库：先让模型看一遍挑出重复，失败就退回规则合并。"""
+    if _STORE is None:
+        return {'ok': False, 'by': 'none', 'message': '兴趣库还没准备好。', 'interests': [], 'candidates': [], 'promoted': []}
+    if not bool(_RUNTIME.get('merge_enabled', True)):
+        return {'ok': False, 'by': 'none', 'message': '整理开关关着（merge_enabled），先去配置里打开。', 'interests': [], 'candidates': [], 'promoted': []}
+    note = ''
+    if bool(_RUNTIME.get('merge_use_model', True)):
+        try:
+            provider = None
+            try:
+                provider = await plugin.context.get_using_provider_async(umo)
+            except Exception:
+                provider = None
+            if provider is None:
+                try:
+                    provider = plugin.context.get_using_provider(umo)
+                except Exception:
+                    provider = None
+            if provider is None:
+                note = '没有可用的模型'
+            else:
+                max_items = max(4, _as_int(_RUNTIME.get('merge_max_items'), 40))
+                max_ops = max(1, _as_int(_RUNTIME.get('merge_max_pairs'), 20))
+                rows_i, rows_c = _organize_material(_STORE.interests(), _STORE.candidates(), max_items)
+                prompt = _organize_prompt(rows_i, rows_c, max_ops)
+                timeout = max(15.0, _as_float(_RUNTIME.get('merge_model_timeout_seconds'), 120.0))
+                resp = await asyncio.wait_for(provider.text_chat(prompt=prompt), timeout=timeout)
+                text = ''
+                if isinstance(resp, dict):
+                    text = str(resp.get('completion_text') or resp.get('text') or '')
+                else:
+                    text = str(getattr(resp, 'completion_text', '') or getattr(resp, 'text', '') or '')
+                plan = _parse_plan(text)
+                if plan:
+                    result = _apply_model_plan(plan)
+                    result['ok'] = True
+                    result['by'] = 'model'
+                    _log_summary(result)
+                    return result
+                note = '模型没给出能看懂的 JSON'
+        except asyncio.TimeoutError:
+            note = '模型超时'
+        except Exception as exc:
+            note = '模型出错：%s' % exc
+        if note:
+            logger.warning('[dafeiyu_interest] 模型整理没成功（%s），退回规则整理', note)
+    result = _apply_rule_plan()
+    result['ok'] = True
+    result['by'] = 'rule'
+    result['note'] = note
+    _log_summary(result)
+    return result
 
 def _build_hint_block(matched: list[dict[str, Any]], related: bool=False) -> str:
     if _STORE is None or not _RUNTIME.get('hints_enabled', True):
@@ -1265,11 +1653,15 @@ class InterestFeature:
             _STORE.remember_candidate(topic, source='search')
             _STORE.bump_search()
             return f'搜到 {len(results)} 条。「{topic}」先当临时话题记着（还没算我的兴趣），聊得多了再收进兴趣库：{summary}'
+        item['last_search'] = _now()
+        if str(item.get('kind') or '') == 'persona' and not bool(_RUNTIME.get('persona_notes_keep')):
+            _STORE.bump_search()
+            _STORE.save()
+            return f'搜到 {len(results)} 条，这次看过就算了，不往兴趣里记：{summary}'
         added = 0
         for result in results[:2]:
             if _STORE.add_note(item, _note_text(result), result.get('title', ''), result.get('url', ''), 'tool'):
                 added += 1
-        item['last_search'] = _now()
         _STORE.bump_search()
         _STORE.save()
         return f'搜到 {len(results)} 条，记了 {added} 条到「{item['name']}」：{summary}'
@@ -1355,12 +1747,20 @@ class InterestFeature:
                 if not self._is_master(event):
                     yield event.plain_result('只有主人能整理兴趣库。')
                     return
-                merged = _STORE.merge_similar()
-                if not merged:
+                res = await self.organize_interests(getattr(event, 'unified_msg_origin', None))
+                if not res.get('ok'):
+                    yield event.plain_result(str(res.get('message') or '整理失败。'))
+                    return
+                merged_i = res.get('interests') or []
+                merged_c = res.get('candidates') or []
+                promoted = res.get('promoted') or []
+                if not merged_i and not merged_c and not promoted:
                     yield event.plain_result('看了一圈，没有能合并的。')
                     return
-                rows = ['%s ← %s' % (m.get('keep'), m.get('drop')) for m in merged[:6]]
-                yield event.plain_result('合并了 %s 组：%s' % (len(merged), '；'.join(rows)))
+                rows = ['%s ← %s' % (m.get('keep'), m.get('drop')) for m in (merged_i + merged_c + promoted)[:6]]
+                tag = '模型' if res.get('by') == 'model' else '规则'
+                body = '：' + '；'.join(rows) if rows else ''
+                yield event.plain_result('%s整理好了：合并兴趣 %s 组、临时话题 %s 组、并进兴趣 %s 个%s' % (tag, len(merged_i), len(merged_c), len(promoted), body))
                 return
             if action in ('删', '删除'):
                 if not self._is_master(event):

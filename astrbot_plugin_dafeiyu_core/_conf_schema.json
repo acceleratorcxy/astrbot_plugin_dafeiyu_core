@@ -501,6 +501,41 @@
         "description": "一次整理最多合并几组（防止一次改太多）",
         "type": "int",
         "default": 20
+      },
+      "merge_use_model": {
+        "description": "用模型挑重复（更准，整理时会调一次模型；关掉就只按名字/链接相似度合并）",
+        "type": "bool",
+        "default": true
+      },
+      "merge_model_timeout_seconds": {
+        "description": "模型整理最多等多少秒（超时就退回规则合并）",
+        "type": "int",
+        "default": 120
+      },
+      "merge_max_items": {
+        "description": "整理时最多把多少条兴趣/临时话题交给模型看",
+        "type": "int",
+        "default": 40
+      },
+      "merge_candidates_enabled": {
+        "description": "临时话题（还在观察的）也参与整理合并，不然会越攒越多",
+        "type": "bool",
+        "default": true
+      },
+      "candidate_merge_threshold": {
+        "description": "临时话题合并门槛 0.5~1（越高越保守，0.62 合很像的）",
+        "type": "float",
+        "default": 0.62
+      },
+      "auto_search_persona": {
+        "description": "人设固定的兴趣也自动上网搜（默认关：没人问就不搜）",
+        "type": "bool",
+        "default": false
+      },
+      "persona_notes_keep": {
+        "description": "人设固定的兴趣保留搜索记录（默认关：只留有人问过的）",
+        "type": "bool",
+        "default": false
       }
     }
   },

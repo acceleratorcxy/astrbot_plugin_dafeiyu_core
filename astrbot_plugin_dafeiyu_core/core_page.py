@@ -509,19 +509,32 @@ def register_page_apis(plugin) -> None:
         store = plugin._interest_store
         if store is None:
             return {"status": "error", "message": "兴趣库没准备好"}
+        organize = getattr(plugin, "organize_interests", None)
+        if organize is None:
+            return {"status": "error", "message": "这个版本不支持整理兴趣"}
         try:
-            merged = store.merge_similar()
+            res = await organize()
         except Exception as exc:
-            return {"status": "error", "message": f"合并失败：{exc}"}
+            return {"status": "error", "message": f"整理失败：{exc}"}
+        if not res.get("ok"):
+            return {"status": "error", "message": str(res.get("message") or "整理失败")}
         brief = store.merge_brief()
-        if not merged:
-            return {"status": "ok", "message": "看了一圈，没有能合并的兴趣", "count": 0, "merged": [], "data": {"merged": [], "brief": brief}}
+        merged = res.get("interests") or []
+        candidates = res.get("candidates") or []
+        promoted = res.get("promoted") or []
+        by = res.get("by") or "rule"
+        tag = "模型" if by == "model" else "规则"
+        count = len(merged) + len(candidates)
+        message = f"{tag}整理：合并兴趣 {len(merged)} 组、临时话题 {len(candidates)} 组（并进兴趣 {len(promoted)} 个）"
         return {
             "status": "ok",
-            "message": f"合并了 {len(merged)} 组",
-            "count": len(merged),
+            "message": message,
+            "count": count,
             "merged": merged,
-            "data": {"merged": merged, "brief": brief},
+            "candidates_merged": candidates,
+            "promoted": promoted,
+            "by": by,
+            "data": {"merged": merged, "candidates": candidates, "promoted": promoted, "brief": brief, "count": count, "by": by},
         }
 
     ctx.register_web_api(f"{p}/interest/merge", interest_merge, ["POST"], "合并相似兴趣")

@@ -4,6 +4,22 @@
 
 - 插件代码收进 `astrbot_plugin_dafeiyu_core/` 子目录，仓库根目录只放 README / 文档 / 许可证 / 更新记录；安装时复制子目录内容即可。
 
+## v2.4.1
+
+兴趣整理改用模型 + 临时话题合并 + 人设兴趣不搜不记。
+
+### 兴趣整理
+
+- 整理优先交给模型：把「正式兴趣 + 临时话题」清单（最多 merge_max_items=40 条）发给当前会话模型，只让它输出 JSON 合并计划（merge_interests / merge_candidates），再按计划合并；模型不可用、超时（merge_model_timeout_seconds=120）、输出不是 JSON 时自动退回规则合并，不影响备份与报告。
+- 临时话题（candidates）也一起整理（merge_candidates_enabled=true）：同一件事的不同问法合成一条（candidate_merge_threshold=0.62），其实就是某个正式兴趣的直接并进去。
+- 模型计划同样遵守优先级 persona > master > auto；被并掉的名字进别名、记录去重、提到次数相加，一轮最多 merge_max_pairs=20 组。
+- 页面「整理合并」按钮、/兴趣 整理、每晚 03:00 的自动整理走同一套逻辑，返回文案会区分「模型整理」还是「规则整理」。
+- 人设固定的兴趣（kind=persona）默认不再自动上网搜（auto_search_persona=false），搜到也不留记录（persona_notes_keep=false，启动和保存配置时自动清掉残存记录）。
+
+### 配置
+
+- 兴趣段新增 7 项：merge_use_model、merge_model_timeout_seconds、merge_max_items、merge_candidates_enabled、candidate_merge_threshold、auto_search_persona、persona_notes_keep。
+
 ## v2.4.0
 
 按「全项目代码审查」整理的 44 条问题一次性修完（只做修复，不新增功能）：

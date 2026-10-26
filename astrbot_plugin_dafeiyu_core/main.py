@@ -37,7 +37,7 @@ from astrbot.core.platform.astr_message_event import MessageSesion
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 PLUGIN_ID = "astrbot_plugin_dafeiyu_core"
-VERSION = "2.4.0"
+VERSION = "2.4.1"
 REPO = "https://github.com/acceleratorcxy/astrbot_plugin_dafeiyu_core"
 
 _DATA_ROOT = Path(get_astrbot_plugin_data_path())
@@ -378,6 +378,11 @@ class Main(Star, owner_feature.OwnerFeature, group_wake_feature.GroupWakeFeature
         owner_feature._apply_runtime(self._section("owner"))
         group_wake_feature._apply_runtime(self._section("group_wake"))
         interest_feature._apply_runtime(self._section("interest"))
+        try:
+            if self._interest_store is not None and not bool(interest_feature._RUNTIME.get("persona_notes_keep")):
+                self._interest_store.strip_persona_notes()
+        except Exception as exc:
+            logger.warning("[dafeiyu_core] 清理人设兴趣记录失败: %s", exc)
         meme_feature._apply_runtime(self._section("meme"))
         search_feature._apply_runtime(self._section("search"))
         speaker_feature._apply_runtime(self._section("speaker"))
@@ -694,6 +699,11 @@ class Main(Star, owner_feature.OwnerFeature, group_wake_feature.GroupWakeFeature
             self._interest_store = None
         interest_feature._STORE = self._interest_store
         try:
+            if self._interest_store is not None and not bool(interest_feature._RUNTIME.get("persona_notes_keep")):
+                self._interest_store.strip_persona_notes()
+        except Exception as exc:
+            logger.warning("[dafeiyu_core] 清理人设兴趣记录失败: %s", exc)
+        try:
             if self._interest_store is not None:
                 self._interest_store.prune()
             interest_feature.start_background(self._section("interest").get("prune_interval_seconds") or 3600)
@@ -865,6 +875,14 @@ class Main(Star, owner_feature.OwnerFeature, group_wake_feature.GroupWakeFeature
         except Exception as exc:
             logger.warning("[dafeiyu_core] 合并兴趣失败: %s", exc)
             return []
+
+    async def organize_interests(self, umo: str | None = None) -> dict:
+        """整理兴趣库：模型挑重复 + 规则兜底（晚上自动跑、页面「整理合并」、/兴趣 整理）。"""
+        try:
+            return await interest_feature.organize(self, umo)
+        except Exception as exc:
+            logger.warning("[dafeiyu_core] 整理兴趣失败: %s", exc)
+            return {"ok": False, "by": "none", "message": f"整理失败：{exc}", "interests": [], "candidates": [], "promoted": []}
 
     def interest_now(self) -> float:
         try:
